@@ -1,0 +1,6 @@
+touch .gitignore
+echo "files/" >> .gitignore  # 이미지 폴더 무시
+echo "*.jpg" >> .gitignore    # jpg 무시
+git add .gitignore
+git commit -m "Ignore images"
+git push
