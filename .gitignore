@@ -10,3 +10,4 @@ __pycache__/
 **/work/
 **/tmp/
 .DS_Store
+original/
