@@ -31,7 +31,7 @@ BEHAVIOR_ROOT = "files/1_Animal_Behavior"
 EMOTION_ROOT  = "files/2_Animal_emotions"
 SOUND_ROOT    = "files/3_Animal_Sound"
 PATELLA_ROOT  = "files/6_Animal_Patella"
-WORK_DIR      = "files/work/omni_dataset"
+WORK_DIR      = "files/work/normal_dataset"
 
 BATCH_SIZE  = 64
 EPOCHS      = 100
@@ -96,34 +96,121 @@ def collect_samples(root, exts):
     print(f"  → {len(samples)} samples, {len(set(s[0] for s in samples))} classes")
     return samples
 
-def collect_patella_samples(root):
-    samples = []
+
+def collect_patella_by_date(root):
+    """
+    날짜 폴더를 분리 단위로 사용하여 데이터 누수를 차단.
+
+    구조: root / grade / date_dir / direction / *.jpg + *.json
+
+    반환:
+        { grade: [ (date_dir, [(img_path, json_path), ...]), ... ] }
+
+    - 동일 날짜(= 동일 개체)의 이미지가 train/val/test에 분산되는 것을 방지.
+    - JSON 쌍이 없는 이미지는 제외.
+    """
+    grade_date_map = defaultdict(list)
 
     for grade in sorted(os.listdir(root)):
         grade_path = os.path.join(root, grade)
         if not os.path.isdir(grade_path):
             continue
 
-        for date_dir in os.listdir(grade_path):
+        for date_dir in sorted(os.listdir(grade_path)):
             date_path = os.path.join(grade_path, date_dir)
             if not os.path.isdir(date_path):
                 continue
 
+            date_samples = []
             for direction in ['Back', 'Front', 'Left', 'Right']:
                 direction_path = os.path.join(date_path, direction)
                 if not os.path.exists(direction_path):
                     continue
-
                 for filename in os.listdir(direction_path):
                     if filename.lower().endswith('.jpg'):
-                        img_path = os.path.join(direction_path, filename)
+                        img_path  = os.path.join(direction_path, filename)
                         json_path = img_path.replace('.jpg', '.json')
-
                         if os.path.exists(json_path):
-                            samples.append((grade, img_path, json_path))
+                            date_samples.append((img_path, json_path))
 
-    print(f"  → {len(samples)} samples, {len(set(s[0] for s in samples))} classes")
-    return samples
+            if date_samples:
+                grade_date_map[grade].append((date_dir, date_samples))
+
+    total_files = sum(
+        len(samples)
+        for dates in grade_date_map.values()
+        for _, samples in dates
+    )
+    total_dates = sum(len(dates) for dates in grade_date_map.values())
+    print(f"  → {total_files} files | {total_dates} date-folders | "
+          f"{len(grade_date_map)} classes")
+    for grade, dates in sorted(grade_date_map.items()):
+        n_files = sum(len(s) for _, s in dates)
+        print(f"    {grade}: {len(dates)} date-folders, {n_files} files")
+    return grade_date_map
+
+
+def split_and_copy_patella(grade_date_map):
+    """
+    날짜 폴더 단위로 train(70%) / val(15%) / test(15%) 분리 후 복사.
+
+    [데이터 누수 방지]
+    - 분리 단위 = 날짜 폴더(동일 개체의 촬영 묶음)
+    - 동일 날짜의 이미지가 여러 split에 섞이는 문제 완전 차단.
+    - 파일명 충돌 방지: {grade}_{date_dir}_{original_filename} 으로 저장.
+    """
+    for split in ["train", "val", "test"]:
+        os.makedirs(os.path.join(WORK_DIR, split, "patella"), exist_ok=True)
+
+    total_stats = defaultdict(lambda: defaultdict(int))  # grade → split → file count
+
+    for grade, date_list in grade_date_map.items():
+        # 날짜 단위 셔플 (재현성을 위해 SEED 고정 후 호출됨)
+        random.shuffle(date_list)
+
+        n = len(date_list)
+        n_train = int(n * 0.70)
+        n_val   = int(n * 0.15)
+        # test = 나머지 (약 15%)
+
+        split_dates = {
+            "train": date_list[:n_train],
+            "val":   date_list[n_train : n_train + n_val],
+            "test":  date_list[n_train + n_val :],
+        }
+
+        for split_name, dates in split_dates.items():
+            dst_label_dir = os.path.join(WORK_DIR, split_name, "patella", grade)
+            os.makedirs(dst_label_dir, exist_ok=True)
+
+            for date_dir, samples in tqdm(
+                dates,
+                desc=f"patella/{split_name}/{grade}",
+                leave=False
+            ):
+                for img_path, json_path in samples:
+                    # 파일명 충돌 방지: grade_dateDir_originalFilename
+                    base     = f"{grade}_{date_dir}_{os.path.basename(img_path)}"
+                    dst_img  = os.path.join(dst_label_dir, base)
+                    dst_json = dst_img.replace('.jpg', '.json')
+                    shutil.copy(img_path,  dst_img)
+                    shutil.copy(json_path, dst_json)
+                    total_stats[grade][split_name] += 1
+
+    # 결과 출력
+    print("\n  📊 Patella split result (date-folder unit):")
+    grand_total = defaultdict(int)
+    for grade in sorted(total_stats):
+        s = total_stats[grade]
+        total = sum(s.values())
+        print(f"    {grade}: train={s['train']} | val={s['val']} | "
+              f"test={s['test']} | total={total}")
+        for split_name, cnt in s.items():
+            grand_total[split_name] += cnt
+    print(f"    [ALL] train={grand_total['train']} | val={grand_total['val']} | "
+          f"test={grand_total['test']} | "
+          f"total={sum(grand_total.values())}")
+
 
 def sample_balanced(samples):
     """샘플링 없이 전체 데이터 반환. 불균형은 학습 시 class_weight로 보정."""
@@ -146,7 +233,7 @@ def sample_balanced_audio(samples):
     return samples
 
 
-def _dedup_samples(samples, is_patella=False):
+def _dedup_samples(samples):
     """
     파일 경로 기준 중복 제거.
     os.walk로 재귀 수집 시 동일 파일이 중복 등록되는 경우를 방지.
@@ -154,44 +241,34 @@ def _dedup_samples(samples, is_patella=False):
     """
     seen = set()
     deduped = []
-    if is_patella:
-        for label, img_path, json_path in samples:
-            if img_path not in seen:
-                seen.add(img_path)
-                deduped.append((label, img_path, json_path))
-    else:
-        for label, path in samples:
-            if path not in seen:
-                seen.add(path)
-                deduped.append((label, path))
+    for label, path in samples:
+        if path not in seen:
+            seen.add(path)
+            deduped.append((label, path))
     removed = len(samples) - len(deduped)
     if removed > 0:
         print(f"  ⚠️  중복 파일 {removed}개 제거 (총 {len(deduped)}개 사용)")
     return deduped
 
 
-def split_and_copy(samples, task_name, is_patella=False, original_samples=None):
+def split_and_copy(samples, task_name, original_samples=None):
     """
     train/val/test 분리 후 WORK_DIR로 파일 복사.
 
-    [데이터 누수 방지 수정]
-    1. 모든 태스크: _dedup_samples()로 파일 경로 중복 제거 후 분리.
+    [데이터 누수 방지]
+    1. _dedup_samples()로 파일 경로 중복 제거 후 분리.
     2. sound 태스크: test 파일을 original_samples에서 먼저 확정하고,
        해당 경로들을 오버샘플 pool(samples)에서 사전 제거.
        → train/val ↔ test 겹침 완전 차단.
     """
     # ── 중복 경로 제거 ──
-    samples = _dedup_samples(samples, is_patella=is_patella)
+    samples = _dedup_samples(samples)
 
     random.shuffle(samples)
     class_samples = defaultdict(list)
 
-    if is_patella:
-        for label, img_path, json_path in samples:
-            class_samples[label].append((img_path, json_path))
-    else:
-        for label, path in samples:
-            class_samples[label].append(path)
+    for label, path in samples:
+        class_samples[label].append(path)
 
     for split in ["train", "val", "test"]:
         os.makedirs(os.path.join(WORK_DIR, split, task_name), exist_ok=True)
@@ -208,7 +285,7 @@ def split_and_copy(samples, task_name, is_patella=False, original_samples=None):
             n_test = max(10, len(paths) // 5)
             test_paths = paths[:n_test]
             test_items_by_label[label] = test_paths
-            excluded_paths.update(test_paths)  # test 파일 집합 확정
+            excluded_paths.update(test_paths)
 
         # 오버샘플 pool에서 test 파일 제거
         filtered_class_samples = defaultdict(list)
@@ -239,15 +316,8 @@ def split_and_copy(samples, task_name, is_patella=False, original_samples=None):
             os.makedirs(dst_label_dir, exist_ok=True)
 
             for item in tqdm(split_items, desc=f"{task_name}/{split_name}/{label}", leave=False):
-                if is_patella:
-                    img_path, json_path = item
-                    dst_img  = os.path.join(dst_label_dir, f"{label}_{os.path.basename(img_path)}")
-                    shutil.copy(img_path, dst_img)
-                    dst_json = dst_img.replace('.jpg', '.json')
-                    shutil.copy(json_path, dst_json)
-                else:
-                    dst_path = os.path.join(dst_label_dir, f"{label}_{os.path.basename(item)}")
-                    shutil.copy(item, dst_path)
+                dst_path = os.path.join(dst_label_dir, f"{label}_{os.path.basename(item)}")
+                shutil.copy(item, dst_path)
 
 
 def _task_ready(task_name):
@@ -297,11 +367,10 @@ def prepare_dataset():
         print("✅ sound already prepared, skipping.")
 
     if need_patella:
-        print("\n📦 Collecting patella luxation (all samples)...")
-        patella_all = collect_patella_samples(PATELLA_ROOT)
-        print("  ℹ️  Patella: Using all samples")
-        print("  📋 Splitting & Copying patella...")
-        split_and_copy(patella_all, "patella", is_patella=True)
+        print("\n📦 Collecting patella luxation (date-folder split)...")
+        grade_date_map = collect_patella_by_date(PATELLA_ROOT)
+        print("  📋 Splitting & Copying patella (by date-folder)...")
+        split_and_copy_patella(grade_date_map)
     else:
         print("✅ patella already prepared, skipping.")
 

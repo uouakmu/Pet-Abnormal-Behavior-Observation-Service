@@ -1,56 +1,35 @@
-"""
-pet_normal_omni_test.py
-
-학습된 pet_normal_omni_best.pth 를 로드하여
-WORK_DIR/test/ 하위에 이미 분리된 test split에 대한 최종 성능을 평가한다.
-
-출력 항목:
-  - Behavior / Emotion / Sound / Patella 전체 Accuracy
-  - 태스크별 클래스별 Precision / Recall / F1 (classification_report)
-  - 태스크별 Confusion Matrix 히트맵 PNG
-  - 태스크별 F1 바차트 PNG
-  - 요약 결과 JSON (test_results.json)
-
-사용법:
-  python pet_normal_omni_test.py \
-      --ckpt   pet_normal_omni_best.pth \
-      --work_dir files/work/omni_dataset \
-      --output_dir test_results
-"""
-
 import os
-import gc
 import json
 import argparse
 import numpy as np
 import torch
 import torch.nn as nn
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-from PIL import Image, ImageFile
 from torch.utils.data import Dataset, DataLoader
-from torch.amp import autocast
 from transformers import Wav2Vec2ForSequenceClassification, Wav2Vec2FeatureExtractor
-from torchvision.models import efficientnet_b3, EfficientNet_B3_Weights
 import torchvision.transforms as transforms
+from torchvision.models import efficientnet_b3, EfficientNet_B3_Weights
+from PIL import Image, ImageFile
 import librosa
-import numpy as np
-from collections import defaultdict
 from tqdm import tqdm
+from collections import defaultdict
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
     accuracy_score,
+    f1_score,
 )
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use("Agg")
+import seaborn as sns
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # =========================
-# CONFIG  (train 파일과 동일)
+# 0. 설정
 # =========================
-
+WORK_DIR      = "files/work/omni_dataset"
+MODEL_PATH    = "pet_normal_omni_best.pth"
 DEVICE        = "cuda:1" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE    = 64
 NUM_WORKERS   = 8
@@ -58,45 +37,35 @@ SR            = 16000
 MAX_AUDIO_LEN = SR * 5
 AUDIO_MODEL_NAME = "facebook/wav2vec2-base"
 
-print(f"🎯 Device: {DEVICE}")
-
 FEATURE_EXTRACTOR = Wav2Vec2FeatureExtractor.from_pretrained(AUDIO_MODEL_NAME)
 
+print(f"🎯 Device: {DEVICE}")
 
 # =========================
-# Dataset Classes  (train과 동일, augment=False 고정)
+# 1. Dataset Classes  (train 코드와 동일 구조)
 # =========================
-
 class ImageDataset(Dataset):
-    """Behavior / Emotion test용 이미지 Dataset."""
-
-    def __init__(self, task_dir: str, label_to_id: dict):
-        """
-        Args:
-            task_dir    : WORK_DIR/test/<task> 경로
-            label_to_id : checkpoint에서 복원한 label → id 매핑
-        """
+    def __init__(self, task_dir):
         self.samples     = []
-        self.label_to_id = label_to_id
-
-        self.transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ])
+        self.label_to_id = {}
 
         for label in sorted(os.listdir(task_dir)):
             label_dir = os.path.join(task_dir, label)
             if not os.path.isdir(label_dir):
                 continue
-            if label not in label_to_id:
-                print(f"  ⚠️  '{label}' 이 label_to_id 에 없습니다. 건너뜁니다.")
-                continue
+            self.label_to_id[label] = len(self.label_to_id)
             for file in os.listdir(label_dir):
                 if file.lower().endswith(('.jpg', '.png', '.jpeg')):
                     self.samples.append((os.path.join(label_dir, file), label))
 
-        print(f"  📊 {os.path.basename(task_dir)}: {len(self.samples)} test samples")
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                  [0.229, 0.224, 0.225]),
+        ])
+        print(f"  📂 {os.path.basename(task_dir)}: "
+              f"{len(self.samples)} samples, {len(self.label_to_id)} classes")
 
     def __len__(self):
         return len(self.samples)
@@ -108,25 +77,15 @@ class ImageDataset(Dataset):
 
 
 class PatellaDataset(Dataset):
-    """Patella test용 Dataset."""
-
-    def __init__(self, task_dir: str, label_to_id: dict):
+    def __init__(self, task_dir):
         self.samples     = []
-        self.label_to_id = label_to_id
-
-        self.transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ])
+        self.label_to_id = {}
 
         for label in sorted(os.listdir(task_dir)):
             label_dir = os.path.join(task_dir, label)
             if not os.path.isdir(label_dir):
                 continue
-            if label not in label_to_id:
-                print(f"  ⚠️  '{label}' 이 label_to_id 에 없습니다. 건너뜁니다.")
-                continue
+            self.label_to_id[label] = len(self.label_to_id)
             for file in os.listdir(label_dir):
                 if file.lower().endswith('.jpg'):
                     img_path  = os.path.join(label_dir, file)
@@ -134,7 +93,14 @@ class PatellaDataset(Dataset):
                     if os.path.exists(json_path):
                         self.samples.append((img_path, json_path, label))
 
-        print(f"  📊 {os.path.basename(task_dir)}: {len(self.samples)} test samples")
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                  [0.229, 0.224, 0.225]),
+        ])
+        print(f"  📂 {os.path.basename(task_dir)}: "
+              f"{len(self.samples)} samples, {len(self.label_to_id)} classes")
 
     def __len__(self):
         return len(self.samples)
@@ -150,8 +116,10 @@ class PatellaDataset(Dataset):
 
         keypoints = []
         for annotation in data.get('annotation_info', []):
-            keypoints.extend([float(annotation.get('x', 0)),
-                               float(annotation.get('y', 0))])
+            keypoints.extend([
+                float(annotation.get('x', 0)),
+                float(annotation.get('y', 0)),
+            ])
         while len(keypoints) < 18:
             keypoints.append(0.0)
         keypoints = torch.tensor(keypoints[:18], dtype=torch.float32)
@@ -160,24 +128,25 @@ class PatellaDataset(Dataset):
 
 
 class AudioDataset(Dataset):
-    """Sound test용 Dataset. Augmentation 없음."""
-
-    def __init__(self, task_dir: str, label_to_id: dict):
+    def __init__(self, task_dir):
         self.samples     = []
-        self.label_to_id = label_to_id
+        self.label_to_id = {}
+        self.id_to_label = {}
+        next_id = 0
 
         for label in sorted(os.listdir(task_dir)):
             label_dir = os.path.join(task_dir, label)
             if not os.path.isdir(label_dir):
                 continue
-            if label not in label_to_id:
-                print(f"  ⚠️  '{label}' 이 label_to_id 에 없습니다. 건너뜁니다.")
-                continue
+            self.label_to_id[label]  = next_id
+            self.id_to_label[next_id] = label
+            next_id += 1
             for file in os.listdir(label_dir):
                 if file.lower().endswith(('.wav', '.mp3', '.m4a')):
                     self.samples.append((os.path.join(label_dir, file), label))
 
-        print(f"  📊 {os.path.basename(task_dir)}: {len(self.samples)} test samples")
+        print(f"  📂 {os.path.basename(task_dir)}: "
+              f"{len(self.samples)} samples, {len(self.label_to_id)} classes")
 
     def __len__(self):
         return len(self.samples)
@@ -197,7 +166,7 @@ class AudioDataset(Dataset):
         inputs = FEATURE_EXTRACTOR(waveform, sampling_rate=SR, return_tensors="pt")
         return {
             "input_values": inputs.input_values.squeeze(0),
-            "labels":       torch.tensor(self.label_to_id[label], dtype=torch.long)
+            "labels": torch.tensor(self.label_to_id[label], dtype=torch.long),
         }
 
 
@@ -209,12 +178,11 @@ def collate_fn_audio(batch):
 
 
 # =========================
-# Model Definitions  (train과 동일)
+# 2. Model Definitions  (train 코드와 동일)
 # =========================
-
 def _efficientnet_b3_backbone():
     backbone = efficientnet_b3(weights=EfficientNet_B3_Weights.IMAGENET1K_V1)
-    in_features = backbone.classifier[1].in_features  # 1536
+    in_features = backbone.classifier[1].in_features
     backbone.classifier = nn.Identity()
     return backbone, in_features
 
@@ -247,7 +215,7 @@ class PatellaModel(nn.Module):
             nn.Linear(in_features + 18, 256),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(256, num_classes)
+            nn.Linear(256, num_classes),
         )
 
     def forward(self, x, keypoints):
@@ -260,7 +228,7 @@ class AudioModel(nn.Module):
         self.model = Wav2Vec2ForSequenceClassification.from_pretrained(
             AUDIO_MODEL_NAME,
             num_labels=num_classes,
-            ignore_mismatched_sizes=True
+            ignore_mismatched_sizes=True,
         )
 
     def forward(self, input_values, labels=None):
@@ -268,9 +236,8 @@ class AudioModel(nn.Module):
 
 
 # =========================
-# Evaluation Utilities
+# 3. Loader Helper
 # =========================
-
 def make_loader(dataset, is_audio=False):
     workers = 2 if is_audio else NUM_WORKERS
     return DataLoader(
@@ -285,389 +252,284 @@ def make_loader(dataset, is_audio=False):
     )
 
 
-def plot_confusion_matrix(cm, class_names, title, save_path):
-    n        = len(class_names)
-    figsize  = (max(10, n * 0.8), max(8, n * 0.7))
-    fontsize = max(6, 12 - n // 5)
+# =========================
+# 4. Evaluation Helpers
+# =========================
+def _report(task_name, y_true, y_pred, id_to_label):
+    """classification_report + confusion matrix 저장."""
+    labels_order = [id_to_label[i] for i in range(len(id_to_label))]
 
-    fig, ax = plt.subplots(figsize=figsize)
-    im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
-    plt.colorbar(im, ax=ax)
+    print(f"\n{'─'*55}")
+    print(f"  [{task_name.upper()}]  Accuracy: "
+          f"{accuracy_score(y_true, y_pred)*100:.2f}%  |  "
+          f"Macro-F1: {f1_score(y_true, y_pred, average='macro')*100:.2f}%")
+    print(f"{'─'*55}")
+    print(classification_report(
+        y_true, y_pred,
+        target_names=labels_order,
+        digits=4,
+        zero_division=0,
+    ))
 
-    ax.set_xticks(range(n))
-    ax.set_yticks(range(n))
-    ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=fontsize)
-    ax.set_yticklabels(class_names, fontsize=fontsize)
-
-    thresh = cm.max() / 2.0
-    for i in range(n):
-        for j in range(n):
-            ax.text(j, i, str(cm[i, j]),
-                    ha="center", va="center", fontsize=fontsize,
-                    color="white" if cm[i, j] > thresh else "black")
-
-    ax.set_title(title, fontsize=13, fontweight="bold")
-    ax.set_ylabel("True Label",      fontsize=11)
-    ax.set_xlabel("Predicted Label", fontsize=11)
+    # Confusion matrix 저장
+    cm = confusion_matrix(y_true, y_pred)
+    fig, ax = plt.subplots(figsize=(max(6, len(labels_order)), max(5, len(labels_order))))
+    sns.heatmap(
+        cm, annot=True, fmt='d', cmap='Blues',
+        xticklabels=labels_order,
+        yticklabels=labels_order,
+        ax=ax,
+    )
+    ax.set_title(f"{task_name.capitalize()} — Confusion Matrix (Test Set)")
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("True")
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    save_path = f"pet_omni_test_cm_{task_name}.png"
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"  ✅ Saved: {save_path}")
+    print(f"  💾 Confusion matrix saved → {save_path}")
+
+    return accuracy_score(y_true, y_pred), f1_score(y_true, y_pred, average='macro')
 
 
-def save_f1_bar(report_dict, class_names, acc, task_name, save_path):
-    f1_scores = [report_dict.get(cn, {}).get("f1-score", 0.0) for cn in class_names]
-    colors    = ["steelblue" if s >= 0.7 else "tomato" if s < 0.4 else "orange"
-                 for s in f1_scores]
-
-    fig, ax = plt.subplots(figsize=(max(10, len(class_names) * 0.8), 5))
-    bars = ax.bar(range(len(class_names)), f1_scores, color=colors, edgecolor="white", alpha=0.88)
-    ax.set_xticks(range(len(class_names)))
-    ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=8)
-    ax.set_ylim(0, 1.1)
-    ax.set_ylabel("F1 Score")
-    ax.set_title(f"{task_name.upper()} — Per-class F1  (Acc: {acc*100:.2f}%)",
-                 fontsize=12, fontweight="bold")
-    ax.axhline(acc, color="black", linestyle="--", alpha=0.6,
-               label=f"Overall Acc {acc*100:.2f}%")
-    ax.legend(fontsize=9)
-    ax.grid(axis="y", alpha=0.3)
-
-    for bar, score in zip(bars, f1_scores):
-        if score > 0:
-            ax.text(bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + 0.01,
-                    f"{score:.2f}", ha="center", va="bottom", fontsize=7)
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"  ✅ Saved: {save_path}")
-
-
-def evaluate_image_task(model, dataset, label_to_id, task_name, output_dir):
-    """Behavior / Emotion 공통 평가 루프."""
-    if len(dataset) == 0:
-        print(f"  ⚠️  {task_name} test samples 가 없습니다.")
-        return {}
-
-    loader = make_loader(dataset)
+# =========================
+# 5. Per-task Test Functions
+# =========================
+@torch.no_grad()
+def test_behavior(model, label_to_id):
     id_to_label = {v: k for k, v in label_to_id.items()}
+    ds     = ImageDataset(os.path.join(WORK_DIR, "test", "behavior"))
+    loader = make_loader(ds)
 
-    all_preds, all_labels = [], []
-    model.eval()
-    with torch.no_grad():
-        for imgs, labels in tqdm(loader, desc=f"  [{task_name}] Inference", ncols=110, leave=False):
-            imgs   = imgs.to(DEVICE)
-            with autocast(DEVICE):
-                logits = model(imgs)
-            preds = logits.argmax(-1).cpu().tolist()
-            all_preds.extend(preds)
-            all_labels.extend(labels.tolist())
+    # 저장된 label_to_id 로 재매핑 (test 폴더 순서와 checkpoint 순서가 다를 수 있음)
+    local_to_ckpt = {v: label_to_id[k] for k, v in ds.label_to_id.items() if k in label_to_id}
 
-    del loader
-    gc.collect(); torch.cuda.empty_cache()
+    model.to(DEVICE).eval()
+    y_true, y_pred = [], []
+    for imgs, labels in tqdm(loader, desc="Test Behavior", leave=False):
+        imgs = imgs.to(DEVICE)
+        preds = model(imgs).argmax(-1).cpu().tolist()
+        y_pred.extend([local_to_ckpt.get(p, p) for p in preds])
+        y_true.extend([local_to_ckpt.get(l.item(), l.item()) for l in labels])
+    model.cpu()
 
-    return _build_results(all_labels, all_preds, label_to_id, id_to_label, task_name, output_dir)
+    return _report("behavior", y_true, y_pred, id_to_label)
 
 
-def evaluate_patella_task(model, dataset, label_to_id, output_dir):
-    """Patella 평가 루프 (keypoint 포함)."""
-    if len(dataset) == 0:
-        print(f"  ⚠️  patella test samples 가 없습니다.")
-        return {}
-
-    loader = make_loader(dataset)
+@torch.no_grad()
+def test_emotion(model, label_to_id):
     id_to_label = {v: k for k, v in label_to_id.items()}
+    ds     = ImageDataset(os.path.join(WORK_DIR, "test", "emotion"))
+    loader = make_loader(ds)
 
-    all_preds, all_labels = [], []
-    model.eval()
-    with torch.no_grad():
-        for imgs, keypoints, labels in tqdm(loader, desc="  [Patella] Inference", ncols=110, leave=False):
-            imgs, keypoints = imgs.to(DEVICE), keypoints.to(DEVICE)
-            with autocast(DEVICE):
-                logits = model(imgs, keypoints)
-            preds = logits.argmax(-1).cpu().tolist()
-            all_preds.extend(preds)
-            all_labels.extend(labels.tolist())
+    local_to_ckpt = {v: label_to_id[k] for k, v in ds.label_to_id.items() if k in label_to_id}
 
-    del loader
-    gc.collect(); torch.cuda.empty_cache()
+    model.to(DEVICE).eval()
+    y_true, y_pred = [], []
+    for imgs, labels in tqdm(loader, desc="Test Emotion", leave=False):
+        imgs = imgs.to(DEVICE)
+        preds = model(imgs).argmax(-1).cpu().tolist()
+        y_pred.extend([local_to_ckpt.get(p, p) for p in preds])
+        y_true.extend([local_to_ckpt.get(l.item(), l.item()) for l in labels])
+    model.cpu()
 
-    return _build_results(all_labels, all_preds, label_to_id, id_to_label, "patella", output_dir)
+    return _report("emotion", y_true, y_pred, id_to_label)
 
 
-def evaluate_sound_task(model, dataset, label_to_id, output_dir):
-    """Sound 평가 루프 (Wav2Vec2)."""
-    if len(dataset) == 0:
-        print(f"  ⚠️  sound test samples 가 없습니다.")
-        return {}
+@torch.no_grad()
+def test_sound(model, label_to_id, id_to_label):
+    ds     = AudioDataset(os.path.join(WORK_DIR, "test", "sound"))
+    loader = make_loader(ds, is_audio=True)
 
-    loader = make_loader(dataset, is_audio=True)
+    local_to_ckpt = {v: label_to_id[k] for k, v in ds.label_to_id.items() if k in label_to_id}
+
+    model.to(DEVICE).eval()
+    y_true, y_pred = [], []
+    for batch in tqdm(loader, desc="Test Sound", leave=False):
+        audios = batch["input_values"].to(DEVICE)
+        labels = batch["labels"]
+        outputs = model(input_values=audios)
+        preds = outputs.logits.argmax(-1).cpu().tolist()
+        y_pred.extend([local_to_ckpt.get(p, p) for p in preds])
+        y_true.extend([local_to_ckpt.get(l.item(), l.item()) for l in labels])
+    model.cpu()
+
+    return _report("sound", y_true, y_pred, id_to_label)
+
+
+@torch.no_grad()
+def test_patella(model, label_to_id):
     id_to_label = {v: k for k, v in label_to_id.items()}
+    ds     = PatellaDataset(os.path.join(WORK_DIR, "test", "patella"))
+    loader = make_loader(ds)
 
-    all_preds, all_labels = [], []
-    model.eval()
-    with torch.no_grad():
-        for batch in tqdm(loader, desc="  [Sound] Inference", ncols=110, leave=False):
-            audios = batch["input_values"].to(DEVICE)
-            labels = batch["labels"]
-            with autocast(DEVICE):
-                outputs = model(input_values=audios)
-            preds = outputs.logits.argmax(-1).cpu().tolist()
-            all_preds.extend(preds)
-            all_labels.extend(labels.tolist())
+    local_to_ckpt = {v: label_to_id[k] for k, v in ds.label_to_id.items() if k in label_to_id}
 
-    del loader
-    gc.collect(); torch.cuda.empty_cache()
+    model.to(DEVICE).eval()
+    y_true, y_pred = [], []
+    for imgs, keypoints, labels in tqdm(loader, desc="Test Patella", leave=False):
+        imgs, keypoints = imgs.to(DEVICE), keypoints.to(DEVICE)
+        preds = model(imgs, keypoints).argmax(-1).cpu().tolist()
+        y_pred.extend([local_to_ckpt.get(p, p) for p in preds])
+        y_true.extend([local_to_ckpt.get(l.item(), l.item()) for l in labels])
+    model.cpu()
 
-    return _build_results(all_labels, all_preds, label_to_id, id_to_label, "sound", output_dir)
+    return _report("patella", y_true, y_pred, id_to_label)
 
 
-def _build_results(all_labels, all_preds, label_to_id, id_to_label, task_name, output_dir):
-    """추론 결과로부터 acc / report / confusion matrix 를 계산하고 시각화를 저장한다."""
-    acc = accuracy_score(all_labels, all_preds)
-    print(f"\n  [{task_name.upper()}] Overall Accuracy: {acc*100:.2f}%")
-
-    present_ids   = sorted(set(all_labels))
-    present_names = [id_to_label[i] for i in present_ids]
-
-    report_str = classification_report(
-        all_labels, all_preds,
-        labels=present_ids, target_names=present_names,
-        digits=4, zero_division=0,
-    )
-    report_dict = classification_report(
-        all_labels, all_preds,
-        labels=present_ids, target_names=present_names,
-        digits=4, zero_division=0, output_dict=True,
-    )
-    print(f"\n{report_str}")
-
-    # Confusion Matrix
-    cm = confusion_matrix(all_labels, all_preds, labels=present_ids)
-    plot_confusion_matrix(
-        cm, present_names,
-        title     = f"{task_name.upper()} Confusion Matrix  (Acc: {acc*100:.2f}%)",
-        save_path = os.path.join(output_dir, f"confusion_matrix_{task_name}.png"),
-    )
-
-    # F1 바차트
-    save_f1_bar(
-        report_dict, present_names, acc, task_name,
-        save_path = os.path.join(output_dir, f"f1_bar_{task_name}.png"),
-    )
-
-    return {
-        "task"             : task_name,
-        "num_test_samples" : len(all_labels),
-        "accuracy"         : round(acc, 6),
-        "report"           : report_dict,
-        "confusion_matrix" : cm.tolist(),
-        "class_names"      : present_names,
+# =========================
+# 6. Summary Plot
+# =========================
+def save_summary_plot(results: dict):
+    """
+    results = {
+        'behavior': (acc, f1),
+        'emotion':  (acc, f1),
+        'sound':    (acc, f1),
+        'patella':  (acc, f1),
     }
+    """
+    tasks  = list(results.keys())
+    accs   = [results[t][0] * 100 for t in tasks]
+    f1s    = [results[t][1] * 100 for t in tasks]
+
+    x      = np.arange(len(tasks))
+    width  = 0.35
+    colors_acc = ['#4C72B0', '#DD8452', '#55A868', '#C44E52']
+    colors_f1  = ['#8FA8D8', '#EEB98A', '#91C9A2', '#E08C8C']
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars1 = ax.bar(x - width/2, accs, width, label='Accuracy (%)',
+                   color=colors_acc, edgecolor='white', linewidth=0.8)
+    bars2 = ax.bar(x + width/2, f1s,  width, label='Macro-F1 (%)',
+                   color=colors_f1,  edgecolor='white', linewidth=0.8)
+
+    # 값 레이블
+    for bar in bars1:
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                f"{bar.get_height():.1f}", ha='center', va='bottom', fontsize=9)
+    for bar in bars2:
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                f"{bar.get_height():.1f}", ha='center', va='bottom', fontsize=9)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([t.capitalize() for t in tasks], fontsize=11)
+    ax.set_ylim(0, 110)
+    ax.set_ylabel("Score (%)", fontsize=11)
+    ax.set_title("Pet Normal Omni — Test Set Performance", fontsize=13, fontweight='bold')
+    ax.legend(fontsize=10)
+    ax.grid(axis='y', alpha=0.3)
+
+    plt.tight_layout()
+    save_path = "pet_omni_test_summary.png"
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"\n  💾 Summary chart saved → {save_path}")
 
 
 # =========================
-# Main Test Function
+# 7. Main
 # =========================
+def main():
+    parser = argparse.ArgumentParser(description="Pet Normal Omni — Test Evaluation")
+    parser.add_argument("--model",      default=MODEL_PATH, help="checkpoint 경로")
+    parser.add_argument("--work_dir",   default=WORK_DIR,   help="work 디렉토리 경로")
+    parser.add_argument("--task",       default="all",
+                        choices=["all", "behavior", "emotion", "sound", "patella"],
+                        help="평가할 태스크 (기본: all)")
+    parser.add_argument("--device",     default=DEVICE,     help="cuda:0 / cuda:1 / cpu")
+    args = parser.parse_args()
 
-def test(
-    ckpt_path : str = "pet_normal_omni_best.pth",
-    work_dir  : str = "files/work/omni_dataset",
-    output_dir: str = "test_results",
-):
-    """
-    Best checkpoint 로드 후 WORK_DIR/test/ 하위의 각 태스크 test set을 평가한다.
+    global WORK_DIR, DEVICE
+    WORK_DIR = args.work_dir
+    DEVICE   = args.device
 
-    Args:
-        ckpt_path  : 학습 중 저장된 .pth 파일 경로
-        work_dir   : train 시 사용한 WORK_DIR (test 폴더가 그 하위에 존재)
-        output_dir : 결과 파일 저장 디렉토리
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"\n📂 Checkpoint : {ckpt_path}")
-    print(f"📂 Work Dir   : {work_dir}")
-
-    # ── Checkpoint 로드 ────────────────────────────────────────────────────────
-    if not os.path.exists(ckpt_path):
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-
-    ckpt = torch.load(ckpt_path, map_location=DEVICE)
+    # ── Checkpoint 로드 ──
+    print(f"\n📦 Loading checkpoint: {args.model}")
+    ckpt = torch.load(args.model, map_location="cpu")
 
     behavior_label_to_id = ckpt["behavior_label_to_id"]
     emotion_label_to_id  = ckpt["emotion_label_to_id"]
     sound_label_to_id    = ckpt["sound_label_to_id"]
+    sound_id_to_label    = ckpt["sound_id_to_label"]
     patella_label_to_id  = ckpt["patella_label_to_id"]
 
-    best_epoch = ckpt.get("best_epoch", "?")
-    best_acc   = ckpt.get("best_acc",   None)
-    print(f"📌 Checkpoint info  →  best epoch: {best_epoch}"
-          + (f"  |  best val avg acc: {best_acc*100:.2f}%" if best_acc else ""))
+    print(f"  ✅ Best epoch : {ckpt.get('best_epoch', 'N/A')}")
+    print(f"  ✅ Best val acc: {ckpt.get('best_acc', 0)*100:.2f}%")
+    print(f"  ✅ Classes — behavior:{len(behavior_label_to_id)} | "
+          f"emotion:{len(emotion_label_to_id)} | "
+          f"sound:{len(sound_label_to_id)} | "
+          f"patella:{len(patella_label_to_id)}")
 
-    # ── 모델 복원 ──────────────────────────────────────────────────────────────
-    print("\n🔄 Loading models...")
+    # ── 모델 복원 ──
     behavior_model = BehaviorModel(len(behavior_label_to_id))
     emotion_model  = EmotionModel(len(emotion_label_to_id))
     patella_model  = PatellaModel(len(patella_label_to_id))
     audio_model    = AudioModel(len(sound_label_to_id))
 
     behavior_model.load_state_dict(ckpt["behavior_model"])
-    emotion_model.load_state_dict( ckpt["emotion_model"])
-    patella_model.load_state_dict( ckpt["patella_model"])
-    audio_model.load_state_dict(   ckpt["audio_model"])
-    print("✅ All models loaded.")
+    emotion_model .load_state_dict(ckpt["emotion_model"])
+    patella_model .load_state_dict(ckpt["patella_model"])
+    audio_model   .load_state_dict(ckpt["audio_model"])
 
-    test_dir = os.path.join(work_dir, "test")
+    print("\n🧪 Starting Test Evaluation...")
+    print(f"   Task: {args.task}")
 
-    # ── 1. Behavior ────────────────────────────────────────────────────────────
-    print(f"\n{'─'*55}\n[Test] BEHAVIOR")
-    behavior_model.to(DEVICE)
-    behavior_ds = ImageDataset(os.path.join(test_dir, "behavior"), behavior_label_to_id)
-    behavior_results = evaluate_image_task(
-        behavior_model, behavior_ds, behavior_label_to_id, "behavior", output_dir
-    )
-    behavior_model.cpu()
-    del behavior_ds
-    gc.collect(); torch.cuda.empty_cache()
+    results = {}
 
-    # ── 2. Emotion ─────────────────────────────────────────────────────────────
-    print(f"\n{'─'*55}\n[Test] EMOTION")
-    emotion_model.to(DEVICE)
-    emotion_ds = ImageDataset(os.path.join(test_dir, "emotion"), emotion_label_to_id)
-    emotion_results = evaluate_image_task(
-        emotion_model, emotion_ds, emotion_label_to_id, "emotion", output_dir
-    )
-    emotion_model.cpu()
-    del emotion_ds
-    gc.collect(); torch.cuda.empty_cache()
+    run_all      = (args.task == "all")
+    run_behavior = run_all or args.task == "behavior"
+    run_emotion  = run_all or args.task == "emotion"
+    run_sound    = run_all or args.task == "sound"
+    run_patella  = run_all or args.task == "patella"
 
-    # ── 3. Sound ───────────────────────────────────────────────────────────────
-    print(f"\n{'─'*55}\n[Test] SOUND")
-    audio_model.to(DEVICE)
-    sound_ds = AudioDataset(os.path.join(test_dir, "sound"), sound_label_to_id)
-    sound_results = evaluate_sound_task(
-        audio_model, sound_ds, sound_label_to_id, output_dir
-    )
-    audio_model.cpu()
-    del sound_ds
-    gc.collect(); torch.cuda.empty_cache()
+    # ── Behavior ──
+    if run_behavior:
+        print("\n" + "="*55)
+        print("🐾  BEHAVIOR TEST")
+        print("="*55)
+        acc, f1 = test_behavior(behavior_model, behavior_label_to_id)
+        results["behavior"] = (acc, f1)
 
-    # ── 4. Patella ─────────────────────────────────────────────────────────────
-    print(f"\n{'─'*55}\n[Test] PATELLA")
-    patella_model.to(DEVICE)
-    patella_ds = PatellaDataset(os.path.join(test_dir, "patella"), patella_label_to_id)
-    patella_results = evaluate_patella_task(
-        patella_model, patella_ds, patella_label_to_id, output_dir
-    )
-    patella_model.cpu()
-    del patella_ds
-    gc.collect(); torch.cuda.empty_cache()
+    # ── Emotion ──
+    if run_emotion:
+        print("\n" + "="*55)
+        print("😊  EMOTION TEST")
+        print("="*55)
+        acc, f1 = test_emotion(emotion_model, emotion_label_to_id)
+        results["emotion"] = (acc, f1)
 
-    # ── 최종 요약 ──────────────────────────────────────────────────────────────
-    acc_b = behavior_results.get("accuracy", 0.0)
-    acc_e = emotion_results.get("accuracy",  0.0)
-    acc_s = sound_results.get("accuracy",    0.0)
-    acc_p = patella_results.get("accuracy",  0.0)
-    avg   = (acc_b + acc_e + acc_s + acc_p) / 4
+    # ── Sound ──
+    if run_sound:
+        print("\n" + "="*55)
+        print("🔊  SOUND TEST")
+        print("="*55)
+        acc, f1 = test_sound(audio_model, sound_label_to_id, sound_id_to_label)
+        results["sound"] = (acc, f1)
 
-    print(f"\n{'='*55}")
-    print(f"🏆  Final Test Results")
-    print(f"{'='*55}")
-    print(f"  Behavior Acc : {acc_b*100:.2f}%")
-    print(f"  Emotion  Acc : {acc_e*100:.2f}%")
-    print(f"  Sound    Acc : {acc_s*100:.2f}%")
-    print(f"  Patella  Acc : {acc_p*100:.2f}%")
-    print(f"  Avg      Acc : {avg*100:.2f}%")
-    print(f"{'='*55}")
+    # ── Patella ──
+    if run_patella:
+        print("\n" + "="*55)
+        print("🦴  PATELLA TEST")
+        print("="*55)
+        acc, f1 = test_patella(patella_model, patella_label_to_id)
+        results["patella"] = (acc, f1)
 
-    # ── 요약 바차트 ────────────────────────────────────────────────────────────
-    _save_task_summary_bar(
-        {"behavior": acc_b, "emotion": acc_e, "sound": acc_s, "patella": acc_p},
-        avg, output_dir
-    )
+    # ── 최종 요약 ──
+    print("\n" + "="*55)
+    print("📊  FINAL SUMMARY")
+    print("="*55)
+    for task, (acc, f1) in results.items():
+        print(f"  {task:<12}  Acc: {acc*100:6.2f}%  |  Macro-F1: {f1*100:6.2f}%")
+    if len(results) > 1:
+        avg_acc = np.mean([v[0] for v in results.values()])
+        avg_f1  = np.mean([v[1] for v in results.values()])
+        print(f"  {'─'*45}")
+        print(f"  {'AVERAGE':<12}  Acc: {avg_acc*100:6.2f}%  |  Macro-F1: {avg_f1*100:6.2f}%")
+        save_summary_plot(results)
 
-    # ── JSON 저장 ──────────────────────────────────────────────────────────────
-    summary = {
-        "checkpoint"      : ckpt_path,
-        "best_val_epoch"  : best_epoch,
-        "best_val_avg_acc": best_acc,
-        "test_behavior_acc": round(acc_b, 6),
-        "test_emotion_acc" : round(acc_e, 6),
-        "test_sound_acc"   : round(acc_s, 6),
-        "test_patella_acc" : round(acc_p, 6),
-        "test_avg_acc"     : round(avg,   6),
-        "behavior_detail"  : behavior_results,
-        "emotion_detail"   : emotion_results,
-        "sound_detail"     : sound_results,
-        "patella_detail"   : patella_results,
-    }
+    print("\n✅ Test evaluation complete.")
 
-    json_path = os.path.join(output_dir, "test_results.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-    print(f"\n  💾 Saved: {json_path}")
-
-    return summary
-
-
-def _save_task_summary_bar(acc_dict: dict, avg_acc: float, output_dir: str):
-    """태스크별 Accuracy 바차트를 저장한다."""
-    tasks  = list(acc_dict.keys())
-    accs   = [acc_dict[t] for t in tasks]
-    colors = ["steelblue" if a >= 0.7 else "tomato" if a < 0.4 else "orange" for a in accs]
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    bars = ax.bar(tasks, accs, color=colors, edgecolor="white", alpha=0.88)
-    ax.set_ylim(0, 1.1)
-    ax.set_ylabel("Accuracy")
-    ax.set_title(f"Test Accuracy per Task  (Avg: {avg_acc*100:.2f}%)",
-                 fontsize=13, fontweight="bold")
-    ax.axhline(avg_acc, color="black", linestyle="--", alpha=0.6,
-               label=f"Avg Acc {avg_acc*100:.2f}%")
-    ax.legend()
-    ax.grid(axis="y", alpha=0.3)
-
-    for bar, acc in zip(bars, accs):
-        ax.text(bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.01,
-                f"{acc*100:.2f}%", ha="center", va="bottom", fontsize=10)
-
-    plt.tight_layout()
-    save_path = os.path.join(output_dir, "test_task_summary.png")
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"  ✅ Saved: {save_path}")
-
-
-# =========================
-# Entry Point
-# =========================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Pet Normal Omni model test evaluation")
-    parser.add_argument(
-        "--ckpt",
-        type=str,
-        default="pet_normal_omni_best.pth",
-        help="Path to the best model checkpoint (.pth)",
-    )
-    parser.add_argument(
-        "--work_dir",
-        type=str,
-        default="files/work/omni_dataset",
-        help="WORK_DIR used during training (contains test/ subfolder)",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="test_results",
-        help="Directory to save evaluation outputs",
-    )
-    args = parser.parse_args()
-
-    test(
-        ckpt_path  = args.ckpt,
-        work_dir   = args.work_dir,
-        output_dir = args.output_dir,
-    )
+    main()
