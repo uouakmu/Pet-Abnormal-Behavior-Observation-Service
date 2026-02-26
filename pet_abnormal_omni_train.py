@@ -1,10 +1,12 @@
 import os
 import gc
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
 
 from PIL import Image, ImageFile
 from torch.utils.data import Dataset, DataLoader
@@ -18,14 +20,22 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 # CONFIG
 # ===============================
 
+SEED = 42
+random.seed(SEED)
+torch.manual_seed(SEED)
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-EPOCHS = 50
-BATCH_SIZE = 32
-NUM_WORKERS = 24
-LR = 1e-4
-NUM_IMAGES_PER_SAMPLE = 5          # 사용자가 업로드하는 사진 수
-LABEL_SMOOTHING = 0.1
+EPOCHS                = 50
+BATCH_SIZE            = 32
+NUM_WORKERS           = 24
+LR                    = 1e-4
+NUM_IMAGES_PER_SAMPLE = 5      # 사용자가 업로드하는 사진 수
+LABEL_SMOOTHING       = 0.1
+
+# train 80% / val 10% / test 10%
+VAL_RATIO  = 0.1
+TEST_RATIO = 0.1
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLASS DEFINITIONS
@@ -48,7 +58,7 @@ EYES_CLASSES = [
     "dog_궤양성각막질환_하", "dog_백내장_비성숙", "dog_백내장_성숙",
     "dog_백내장_초기", "dog_비궤양성각막질환_상", "dog_비궤양성각막질환_하",
     "dog_색소침착성각막염", "dog_안검내반증", "dog_안검염",
-    "dog_안검종양", "dog_유루증", "dog_핵경화"
+    "dog_안검종양", "dog_유루증", "dog_핵경화",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -57,7 +67,7 @@ EYES_CLASSES = [
 # ─────────────────────────────────────────────────────────────────────────────
 EYES_SIMILAR_GROUPS = [
     ["dog_비궤양성각막질환_상", "dog_비궤양성각막질환_하"],
-    ["dog_궤양성각막질환_상", "dog_궤양성각막질환_하"],
+    ["dog_궤양성각막질환_상",   "dog_궤양성각막질환_하"],
     ["dog_백내장_초기", "dog_백내장_비성숙", "dog_백내장_성숙"],
 ]
 
@@ -65,8 +75,6 @@ EYES_SIMILAR_GROUPS = [
 # ===============================
 # LOSS: Hierarchical-Aware CE
 # ===============================
-# 같은 질환 그룹 내 오분류에 extra_penalty 를 곱해
-# 모델이 상/하, 초기/성숙 구분을 더 열심히 학습하게 만든다.
 
 class HierarchicalWeightedLoss(nn.Module):
     """
@@ -89,11 +97,11 @@ class HierarchicalWeightedLoss(nn.Module):
         extra_penalty=1.5,
     ):
         super().__init__()
-        self.smoothing      = smoothing
-        self.extra_penalty  = extra_penalty
-        self.num_classes    = len(class_names)
-        self.class_names    = class_names
-        self.name_to_idx    = {n: i for i, n in enumerate(class_names)}
+        self.smoothing     = smoothing
+        self.extra_penalty = extra_penalty
+        self.num_classes   = len(class_names)
+        self.class_names   = class_names
+        self.name_to_idx   = {n: i for i, n in enumerate(class_names)}
 
         # 유사 그룹 → (idx_i, idx_j) pair set
         self.penalty_pairs = set()
@@ -108,22 +116,18 @@ class HierarchicalWeightedLoss(nn.Module):
         self.register_buffer("weight", class_weights)
 
     def forward(self, logits, targets):
-        """
-        logits  : (B, C)
-        targets : (B,)  long
-        """
-        B, C = logits.shape
+        B, C   = logits.shape
         device = logits.device
 
         # ── Label Smoothing ──
-        log_prob = F.log_softmax(logits, dim=-1)
-        smooth_loss = -log_prob.mean(dim=-1)                              # (B,)
+        log_prob    = F.log_softmax(logits, dim=-1)
+        smooth_loss = -log_prob.mean(dim=-1)                                               # (B,)
         nll_loss    = F.nll_loss(log_prob, targets, weight=self.weight, reduction="none")  # (B,)
-        base_loss   = (1 - self.smoothing) * nll_loss + self.smoothing * smooth_loss  # (B,)
+        base_loss   = (1 - self.smoothing) * nll_loss + self.smoothing * smooth_loss       # (B,)
 
         # ── Hierarchical Penalty ──
         if self.penalty_pairs:
-            pred_classes = logits.argmax(dim=-1)          # (B,)
+            pred_classes = logits.argmax(dim=-1)
             penalty_mask = torch.ones(B, device=device)
             for b in range(B):
                 t = targets[b].item()
@@ -140,13 +144,8 @@ class HierarchicalWeightedLoss(nn.Module):
 # ===============================
 
 def compute_class_weights(sample_counts: dict, class_names: list) -> torch.Tensor:
-    """
-    Inverse-frequency 방식으로 클래스 가중치를 계산한다.
-    sample_counts: {class_name: n_samples}
-    """
-    counts = torch.tensor(
-        [sample_counts.get(n, 1) for n in class_names], dtype=torch.float
-    )
+    """Inverse-frequency 방식으로 클래스 가중치를 계산한다."""
+    counts  = torch.tensor([sample_counts.get(n, 1) for n in class_names], dtype=torch.float)
     weights = 1.0 / counts
     weights = weights / weights.sum() * len(class_names)   # normalize
     return weights
@@ -161,23 +160,15 @@ class AnomalyMultiBackbone(nn.Module):
     이상 증상 Omni 모델
     ├── skin_backbone  → Skin 분류 (피부질환)
     └── eyes_backbone  → Eyes 분류 (안구질환)
-
-    각 backbone 은 ResNet50 (ImageNet pretrained) 을 기반으로 하며,
-    마지막 fc 를 task-specific head 로 교체한다.
-
-    Eyes 의 경우 유사 클래스 혼동을 줄이기 위해:
-      1) Dropout + 더 깊은 head
-      2) Feature Attention (Channel Squeeze-Excitation)
-    을 추가한다.
     """
 
     def __init__(self, num_skin_classes: int, num_eyes_classes: int):
         super().__init__()
 
         # ── Skin Backbone (ResNet50 pretrained) ──────────────────────────────
-        skin_base = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-        skin_feat_dim = skin_base.fc.in_features          # 2048
-        skin_base.fc = nn.Identity()
+        skin_base          = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        skin_feat_dim      = skin_base.fc.in_features   # 2048
+        skin_base.fc       = nn.Identity()
         self.skin_backbone = skin_base
         self.skin_head = nn.Sequential(
             nn.Linear(skin_feat_dim, 512),
@@ -188,15 +179,11 @@ class AnomalyMultiBackbone(nn.Module):
         )
 
         # ── Eyes Backbone (ResNet50 pretrained + SE attention) ───────────────
-        eyes_base = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-        eyes_feat_dim = eyes_base.fc.in_features
-        eyes_base.fc = nn.Identity()
+        eyes_base          = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        eyes_feat_dim      = eyes_base.fc.in_features
+        eyes_base.fc       = nn.Identity()
         self.eyes_backbone = eyes_base
-
-        # Squeeze-Excitation: 채널 중요도 재보정 → 미세한 병변 구분력 향상
-        self.eyes_se = SqueezeExcitation(eyes_feat_dim, reduction=16)
-
-        # 더 깊은 classifier head
+        self.eyes_se       = SqueezeExcitation(eyes_feat_dim, reduction=16)
         self.eyes_head = nn.Sequential(
             nn.Linear(eyes_feat_dim, 1024),
             nn.BatchNorm1d(1024),
@@ -210,28 +197,18 @@ class AnomalyMultiBackbone(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, task: str = "skin") -> torch.Tensor:
-        """
-        x    : (B, 3, 224, 224)  — 단일 이미지 또는 앙상블 후 평균 logit 용
-        task : "skin" | "eyes"
-        """
         if task == "skin":
-            feat = self.skin_backbone(x)
-            return self.skin_head(feat)
-
+            return self.skin_head(self.skin_backbone(x))
         elif task == "eyes":
-            feat = self.eyes_backbone(x)           # (B, 2048)
-            feat = self.eyes_se(feat)              # channel attention
+            feat = self.eyes_backbone(x)
+            feat = self.eyes_se(feat)
             return self.eyes_head(feat)
-
         else:
             raise ValueError(f"Unknown task: {task!r}. Choose 'skin' or 'eyes'.")
 
 
 class SqueezeExcitation(nn.Module):
-    """
-    1-D Squeeze-Excitation for feature vectors (after global avg pool).
-    feat : (B, C)
-    """
+    """1-D Squeeze-Excitation for feature vectors (after global avg pool)."""
 
     def __init__(self, channels: int, reduction: int = 16):
         super().__init__()
@@ -252,9 +229,9 @@ class SqueezeExcitation(nn.Module):
 
 def predict_anomaly(
     model: AnomalyMultiBackbone,
-    images: list,           # list of PIL.Image (5장)
-    task: str,              # "skin" | "eyes"
-    pet_type: str,          # "dog" | "cat"
+    images: list,
+    task: str,
+    pet_type: str,
     class_names: list,
     device=DEVICE,
 ) -> dict:
@@ -262,47 +239,31 @@ def predict_anomaly(
     5장의 이미지를 입력받아 평균 softmax 확률로 최종 예측을 반환한다.
 
     Returns:
-        {
-            "predicted_class": str,
-            "confidence": float,
-            "top3": [(class_name, prob), ...]
-        }
+        {"predicted_class": str, "confidence": float, "top3": [(class_name, prob), ...]}
     """
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406],
-                             [0.229, 0.224, 0.225]),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
     model.eval()
     model.to(device)
 
-    # 반려동물 종에 맞는 class index만 선택
-    valid_idxs = [
-        i for i, n in enumerate(class_names) if n.startswith(pet_type + "_")
-    ]
+    valid_idxs  = [i for i, n in enumerate(class_names) if n.startswith(pet_type + "_")]
     valid_names = [class_names[i] for i in valid_idxs]
 
     with torch.no_grad():
         probs_accum = torch.zeros(len(class_names), device=device)
-
         for img in images:
-            tensor = transform(img).unsqueeze(0).to(device)   # (1, 3, 224, 224)
-            logits = model(tensor, task=task)                  # (1, C)
-
-            # 해당 pet_type 외 class 마스킹 (−inf → softmax ≈ 0)
-            mask = torch.full((len(class_names),), float("-inf"), device=device)
+            tensor = transform(img).unsqueeze(0).to(device)
+            logits = model(tensor, task=task)
+            mask   = torch.full((len(class_names),), float("-inf"), device=device)
             mask[valid_idxs] = logits[0][valid_idxs]
+            probs_accum += F.softmax(mask, dim=-1)
+        probs_accum /= len(images)
 
-            probs = F.softmax(mask, dim=-1)
-            probs_accum += probs
-
-        probs_accum /= len(images)    # 평균 앙상블
-
-    # 유효 class 중 top-k
-    valid_probs = [(valid_names[i], probs_accum[valid_idxs[i]].item())
-                   for i in range(len(valid_idxs))]
+    valid_probs = [(valid_names[i], probs_accum[valid_idxs[i]].item()) for i in range(len(valid_idxs))]
     valid_probs.sort(key=lambda x: x[1], reverse=True)
 
     return {
@@ -313,60 +274,110 @@ def predict_anomaly(
 
 
 # ===============================
+# DATA SPLIT UTILITY
+# ===============================
+
+def collect_and_split(
+    root_dir: str,
+    class_names: list,
+    val_ratio: float  = VAL_RATIO,
+    test_ratio: float = TEST_RATIO,
+    seed: int         = SEED,
+):
+    """
+    root_dir 하위 class 디렉토리에서 이미지를 수집하고
+    클래스별 stratified split으로 train / val / test 를 반환한다.
+
+    [데이터 누수 방지]
+    - 파일 경로 중복 제거 (seen set)
+    - 클래스별로 독립 shuffle 후 비율 분리
+      → train / val / test 간 동일 파일 절대 미포함
+
+    Returns:
+        train_samples, val_samples, test_samples
+        각 원소: (img_path: str, label_idx: int)
+    """
+    rng         = random.Random(seed)
+    name_to_idx = {n: i for i, n in enumerate(class_names)}
+    class_files = defaultdict(list)
+    seen_paths  = set()
+
+    for class_name in class_names:
+        class_dir = os.path.join(root_dir, class_name)
+        if not os.path.isdir(class_dir):
+            continue
+        label_idx = name_to_idx[class_name]
+        for fname in os.listdir(class_dir):
+            if not fname.lower().endswith((".jpg", ".jpeg", ".png")):
+                continue
+            fpath = os.path.join(class_dir, fname)
+            if fpath in seen_paths:      # 중복 파일 제거
+                continue
+            seen_paths.add(fpath)
+            class_files[label_idx].append(fpath)
+
+    train_samples, val_samples, test_samples = [], [], []
+
+    for label_idx, paths in class_files.items():
+        rng.shuffle(paths)
+        n       = len(paths)
+        n_val   = max(1, int(n * val_ratio))
+        n_test  = max(1, int(n * test_ratio))
+        n_train = n - n_val - n_test
+
+        # 샘플 수가 너무 적은 클래스 경고
+        if n_train <= 0:
+            print(f"  ⚠️  클래스 idx={label_idx}: 샘플 수({n})가 너무 적어 train이 0개입니다.")
+            n_train, n_val, n_test = n, 0, 0
+
+        train_samples.extend([(p, label_idx) for p in paths[:n_train]])
+        val_samples.extend(  [(p, label_idx) for p in paths[n_train:n_train + n_val]])
+        test_samples.extend( [(p, label_idx) for p in paths[n_train + n_val:]])
+
+    print(f"  → train: {len(train_samples)} | val: {len(val_samples)} | test: {len(test_samples)}")
+    return train_samples, val_samples, test_samples
+
+
+def count_samples_from_split(samples: list, class_names: list) -> dict:
+    """split된 samples에서 class_name별 개수를 반환 (class_weight 계산용)."""
+    idx_to_name = {i: n for i, n in enumerate(class_names)}
+    counts      = defaultdict(int)
+    for _, label_idx in samples:
+        counts[idx_to_name[label_idx]] += 1
+    return dict(counts)
+
+
+# ===============================
 # DATASETS
 # ===============================
 
 class AnomalyDataset(Dataset):
     """
-    데이터셋 구조:
-        root_dir/
-            dog_결막염/  img001.jpg ...
-            cat_normal/  img001.jpg ...
-            ...
+    collect_and_split() 결과를 받아 Dataset으로 래핑한다.
 
-    task      : "skin" | "eyes"
-    pet_type  : "dog" | "cat" | "all"
+    samples  : [(img_path, label_idx), ...]
+    is_train : True  → augmentation 적용
+               False → resize only (val / test)
     """
 
-    TRANSFORM = transforms.Compose([
+    TRANSFORM_TRAIN = transforms.Compose([
         transforms.Resize((256, 256)),
         transforms.RandomCrop(224),
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406],
-                             [0.229, 0.224, 0.225]),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
     TRANSFORM_VAL = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406],
-                             [0.229, 0.224, 0.225]),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
-    def __init__(
-        self,
-        root_dir: str,
-        class_names: list,
-        task: str,
-        is_train: bool = True,
-    ):
-        self.class_names = class_names
-        self.task        = task
-        self.transform   = self.TRANSFORM if is_train else self.TRANSFORM_VAL
-        self.name_to_idx = {n: i for i, n in enumerate(class_names)}
-
-        self.samples = []   # [(img_path, label_idx), ...]
-
-        for class_name in class_names:
-            class_dir = os.path.join(root_dir, class_name)
-            if not os.path.isdir(class_dir):
-                continue
-            label_idx = self.name_to_idx[class_name]
-            for fname in os.listdir(class_dir):
-                if fname.lower().endswith((".jpg", ".jpeg", ".png")):
-                    self.samples.append((os.path.join(class_dir, fname), label_idx))
+    def __init__(self, samples: list, is_train: bool = True):
+        self.samples   = samples
+        self.transform = self.TRANSFORM_TRAIN if is_train else self.TRANSFORM_VAL
 
     def __len__(self):
         return len(self.samples)
@@ -375,20 +386,6 @@ class AnomalyDataset(Dataset):
         img_path, label = self.samples[idx]
         img = Image.open(img_path).convert("RGB")
         return self.transform(img), label
-
-    @staticmethod
-    def get_sample_counts(root_dir: str, class_names: list) -> dict:
-        counts = {}
-        for cn in class_names:
-            d = os.path.join(root_dir, cn)
-            if os.path.isdir(d):
-                counts[cn] = len([
-                    f for f in os.listdir(d)
-                    if f.lower().endswith((".jpg", ".jpeg", ".png"))
-                ])
-            else:
-                counts[cn] = 1
-        return counts
 
 
 # ===============================
@@ -399,22 +396,25 @@ def train(
     skin_root: str = "files/4_Animal_Skin",
     eyes_root: str = "files/5_Animal_Eyes",
 ):
-    # ── 클래스 정의 ────────────────────────────────────────────────────────────
+    print(f"🎯 Device: {DEVICE}")
+
     skin_classes = SKIN_CLASSES
     eyes_classes = EYES_CLASSES
 
-    num_skin  = len(skin_classes)
-    num_eyes  = len(eyes_classes)
+    # ── Train / Val / Test Split ───────────────────────────────────────────────
+    # 클래스별 stratified split → 누수 없음
+    print("\n📦 Splitting Skin dataset...")
+    skin_train_samples, skin_val_samples, _ = collect_and_split(skin_root, skin_classes)
 
-    # ── 모델 초기화 ────────────────────────────────────────────────────────────
-    model = AnomalyMultiBackbone(num_skin, num_eyes)
+    print("\n📦 Splitting Eyes dataset...")
+    eyes_train_samples, eyes_val_samples, _ = collect_and_split(eyes_root, eyes_classes)
 
-    # ── 클래스 가중치 (불균형 보정) ────────────────────────────────────────────
-    skin_counts  = AnomalyDataset.get_sample_counts(skin_root, skin_classes)
-    eyes_counts  = AnomalyDataset.get_sample_counts(eyes_root, eyes_classes)
+    # ── 클래스 가중치: train split 기준으로만 계산 (val/test 정보 누수 방지) ──
+    skin_train_counts = count_samples_from_split(skin_train_samples, skin_classes)
+    eyes_train_counts = count_samples_from_split(eyes_train_samples, eyes_classes)
 
-    skin_weights = compute_class_weights(skin_counts, skin_classes).to(DEVICE)
-    eyes_weights = compute_class_weights(eyes_counts, eyes_classes).to(DEVICE)
+    skin_weights = compute_class_weights(skin_train_counts, skin_classes).to(DEVICE)
+    eyes_weights = compute_class_weights(eyes_train_counts, eyes_classes).to(DEVICE)
 
     # ── Loss ───────────────────────────────────────────────────────────────────
     skin_criterion = HierarchicalWeightedLoss(
@@ -430,48 +430,43 @@ def train(
         extra_penalty  = 1.5,
     )
 
-    # ── Optimizer & Scheduler ──────────────────────────────────────────────────
+    # ── 모델 / Optimizer / Scheduler ──────────────────────────────────────────
+    model     = AnomalyMultiBackbone(len(skin_classes), len(eyes_classes)).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+    scaler    = GradScaler()
 
-    scaler = GradScaler()
-
-    # ── 학습 기록 & Best 추적 ──────────────────────────────────────
-    history      = []   # {epoch, skin_loss, skin_acc, eyes_loss, eyes_acc, avg_acc}
+    # ── 학습 기록 & Best 추적 ──────────────────────────────────────────────────
+    history      = []
     best_avg_acc = 0.0
     best_epoch   = 0
 
     # ── Training Loop ──────────────────────────────────────────────────────────
     for epoch in range(EPOCHS):
-        print(f"\n========= Epoch {epoch + 1}/{EPOCHS} =========\n")
+        print(f"\n{'='*55}")
+        print(f"Epoch {epoch + 1}/{EPOCHS}")
+        print(f"{'='*55}")
 
         # ──────────────────────────────────────────────────────────────────────
-        # 1️⃣  Skin Training
+        # 1. Skin Training
         # ──────────────────────────────────────────────────────────────────────
-        print("[1/2] Skin Training")
-        model.to(DEVICE)
+        print("\n[Train 1/2] Skin")
         model.train()
 
-        skin_dataset = AnomalyDataset(skin_root, skin_classes, task="skin", is_train=True)
-        skin_loader  = DataLoader(
-            skin_dataset,
-            batch_size  = BATCH_SIZE,
-            shuffle     = True,
-            num_workers = NUM_WORKERS,
-            pin_memory  = True,
+        skin_train_ds     = AnomalyDataset(skin_train_samples, is_train=True)
+        skin_train_loader = DataLoader(
+            skin_train_ds, batch_size=BATCH_SIZE, shuffle=True,
+            num_workers=NUM_WORKERS, pin_memory=True,
+            persistent_workers=(NUM_WORKERS > 0), prefetch_factor=4,
         )
 
         skin_loss_sum, skin_correct, skin_total = 0.0, 0, 0
-
-        skin_pbar = tqdm(skin_loader, desc=f"  [Skin ] Epoch {epoch+1:02d}/{EPOCHS}", ncols=110, leave=True)
-        for images, labels in skin_pbar:
+        for images, labels in tqdm(skin_train_loader, desc=f"  Skin Train Ep{epoch+1:02d}", ncols=110, leave=True):
             images, labels = images.to(DEVICE), labels.to(DEVICE)
             optimizer.zero_grad()
-
             with autocast():
                 outputs = model(images, task="skin")
                 loss    = skin_criterion(outputs, labels)
-
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -480,40 +475,31 @@ def train(
             skin_correct  += (outputs.argmax(1) == labels).sum().item()
             skin_total    += images.size(0)
 
-            skin_pbar.set_postfix(
-                loss=f"{skin_loss_sum / skin_total:.4f}",
-                acc=f"{100 * skin_correct / skin_total:.2f}%"
-            )
+        skin_train_loss = skin_loss_sum / skin_total
+        skin_train_acc  = skin_correct  / skin_total
 
-        del skin_loader, skin_dataset
-        gc.collect()
-        torch.cuda.empty_cache()
+        del skin_train_ds, skin_train_loader
+        gc.collect(); torch.cuda.empty_cache()
 
         # ──────────────────────────────────────────────────────────────────────
-        # 2️⃣  Eyes Training
+        # 2. Eyes Training
         # ──────────────────────────────────────────────────────────────────────
-        print("[2/2] Eyes Training")
+        print("\n[Train 2/2] Eyes")
 
-        eyes_dataset = AnomalyDataset(eyes_root, eyes_classes, task="eyes", is_train=True)
-        eyes_loader  = DataLoader(
-            eyes_dataset,
-            batch_size  = BATCH_SIZE,
-            shuffle     = True,
-            num_workers = NUM_WORKERS,
-            pin_memory  = True,
+        eyes_train_ds     = AnomalyDataset(eyes_train_samples, is_train=True)
+        eyes_train_loader = DataLoader(
+            eyes_train_ds, batch_size=BATCH_SIZE, shuffle=True,
+            num_workers=NUM_WORKERS, pin_memory=True,
+            persistent_workers=(NUM_WORKERS > 0), prefetch_factor=4,
         )
 
         eyes_loss_sum, eyes_correct, eyes_total = 0.0, 0, 0
-
-        eyes_pbar = tqdm(eyes_loader, desc=f"  [Eyes ] Epoch {epoch+1:02d}/{EPOCHS}", ncols=110, leave=True)
-        for images, labels in eyes_pbar:
+        for images, labels in tqdm(eyes_train_loader, desc=f"  Eyes Train Ep{epoch+1:02d}", ncols=110, leave=True):
             images, labels = images.to(DEVICE), labels.to(DEVICE)
             optimizer.zero_grad()
-
             with autocast():
                 outputs = model(images, task="eyes")
                 loss    = eyes_criterion(outputs, labels)
-
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -522,97 +508,164 @@ def train(
             eyes_correct  += (outputs.argmax(1) == labels).sum().item()
             eyes_total    += images.size(0)
 
-            eyes_pbar.set_postfix(
-                loss=f"{eyes_loss_sum / eyes_total:.4f}",
-                acc=f"{100 * eyes_correct / eyes_total:.2f}%"
-            )
+        eyes_train_loss = eyes_loss_sum / eyes_total
+        eyes_train_acc  = eyes_correct  / eyes_total
 
-        del eyes_loader, eyes_dataset
-        gc.collect()
-        torch.cuda.empty_cache()
+        del eyes_train_ds, eyes_train_loader
+        gc.collect(); torch.cuda.empty_cache()
 
-        # ── LR Scheduler Step ────────────────────────────────────────────────
+        # LR Scheduler Step
         scheduler.step()
 
-        # ── History 기록 ──────────────────────────────────────────
-        skin_epoch_loss = skin_loss_sum / skin_total
-        skin_epoch_acc  = skin_correct  / skin_total
-        eyes_epoch_loss = eyes_loss_sum / eyes_total
-        eyes_epoch_acc  = eyes_correct  / eyes_total
-        avg_acc         = (skin_epoch_acc + eyes_epoch_acc) / 2
+        # ──────────────────────────────────────────────────────────────────────
+        # 3. Validation  ← [수정] 추가: val acc 기준으로 best model 저장
+        # ──────────────────────────────────────────────────────────────────────
+        print("\n[Val] Skin & Eyes")
+        model.eval()
 
+        # Skin Val
+        skin_val_ds     = AnomalyDataset(skin_val_samples, is_train=False)
+        skin_val_loader = DataLoader(
+            skin_val_ds, batch_size=BATCH_SIZE, shuffle=False,
+            num_workers=NUM_WORKERS // 2, pin_memory=True,
+            persistent_workers=(NUM_WORKERS // 2 > 0), prefetch_factor=4,
+        )
+
+        skin_val_loss_sum, skin_val_correct, skin_val_total = 0.0, 0, 0
+        with torch.no_grad():
+            for images, labels in tqdm(skin_val_loader, desc="  Skin Val  ", ncols=110, leave=False):
+                images, labels = images.to(DEVICE), labels.to(DEVICE)
+                with autocast():
+                    outputs = model(images, task="skin")
+                    loss    = skin_criterion(outputs, labels)
+                skin_val_loss_sum += loss.item() * images.size(0)
+                skin_val_correct  += (outputs.argmax(1) == labels).sum().item()
+                skin_val_total    += images.size(0)
+
+        skin_val_loss = skin_val_loss_sum / skin_val_total
+        skin_val_acc  = skin_val_correct  / skin_val_total
+
+        del skin_val_ds, skin_val_loader
+        gc.collect(); torch.cuda.empty_cache()
+
+        # Eyes Val
+        eyes_val_ds     = AnomalyDataset(eyes_val_samples, is_train=False)
+        eyes_val_loader = DataLoader(
+            eyes_val_ds, batch_size=BATCH_SIZE, shuffle=False,
+            num_workers=NUM_WORKERS // 2, pin_memory=True,
+            persistent_workers=(NUM_WORKERS // 2 > 0), prefetch_factor=4,
+        )
+
+        eyes_val_loss_sum, eyes_val_correct, eyes_val_total = 0.0, 0, 0
+        with torch.no_grad():
+            for images, labels in tqdm(eyes_val_loader, desc="  Eyes Val  ", ncols=110, leave=False):
+                images, labels = images.to(DEVICE), labels.to(DEVICE)
+                with autocast():
+                    outputs = model(images, task="eyes")
+                    loss    = eyes_criterion(outputs, labels)
+                eyes_val_loss_sum += loss.item() * images.size(0)
+                eyes_val_correct  += (outputs.argmax(1) == labels).sum().item()
+                eyes_val_total    += images.size(0)
+
+        eyes_val_loss = eyes_val_loss_sum / eyes_val_total
+        eyes_val_acc  = eyes_val_correct  / eyes_val_total
+
+        del eyes_val_ds, eyes_val_loader
+        gc.collect(); torch.cuda.empty_cache()
+
+        # ── 결과 출력 ──────────────────────────────────────────────────────────
+        avg_val_acc = (skin_val_acc + eyes_val_acc) / 2
+
+        print(f"\n📊 Epoch {epoch+1} Results:")
+        print(f"  Skin │ Train  Loss: {skin_train_loss:.4f}  Acc: {skin_train_acc*100:.2f}%"
+              f"  │  Val Loss: {skin_val_loss:.4f}  Acc: {skin_val_acc*100:.2f}%")
+        print(f"  Eyes │ Train  Loss: {eyes_train_loss:.4f}  Acc: {eyes_train_acc*100:.2f}%"
+              f"  │  Val Loss: {eyes_val_loss:.4f}  Acc: {eyes_val_acc*100:.2f}%")
+        print(f"  Avg Val Acc: {avg_val_acc*100:.2f}%")
+
+        # ── History 기록 ────────────────────────────────────────────────────────
         history.append({
-            'epoch'     : epoch + 1,
-            'skin_loss' : skin_epoch_loss,
-            'skin_acc'  : skin_epoch_acc,
-            'eyes_loss' : eyes_epoch_loss,
-            'eyes_acc'  : eyes_epoch_acc,
-            'avg_acc'   : avg_acc,
+            'epoch'          : epoch + 1,
+            'skin_train_loss': skin_train_loss,
+            'skin_train_acc' : skin_train_acc,
+            'skin_val_loss'  : skin_val_loss,
+            'skin_val_acc'   : skin_val_acc,
+            'eyes_train_loss': eyes_train_loss,
+            'eyes_train_acc' : eyes_train_acc,
+            'eyes_val_loss'  : eyes_val_loss,
+            'eyes_val_acc'   : eyes_val_acc,
+            'avg_val_acc'    : avg_val_acc,
         })
 
-        print(f"  Skin | Loss: {skin_epoch_loss:.4f} | Acc: {skin_epoch_acc*100:.2f}%")
-        print(f"  Eyes | Loss: {eyes_epoch_loss:.4f} | Acc: {eyes_epoch_acc*100:.2f}%")
-        print(f"  Avg Acc: {avg_acc*100:.2f}%")
-
-        # ── Best Model 저장 (avg acc 기준) ───────────────────────────────
-        if avg_acc > best_avg_acc:
-            best_avg_acc = avg_acc
+        # ── Best Model 저장: val acc 기준 ─────────────────────────────────────
+        # [수정] 기존: train acc 기준 → 과적합 모델이 저장될 위험
+        #        변경: val acc 기준  → 실제 일반화 성능이 가장 좋은 모델 저장
+        if avg_val_acc > best_avg_acc:
+            best_avg_acc = avg_val_acc
             best_epoch   = epoch + 1
             torch.save(
                 {
-                    "model"           : model.state_dict(),
-                    "epoch"           : epoch + 1,
-                    "best_avg_acc"    : best_avg_acc,
-                    "skin_classes"    : SKIN_CLASSES,
-                    "eyes_classes"    : EYES_CLASSES,
-                    "history"         : history,
+                    "model"        : model.state_dict(),
+                    "epoch"        : epoch + 1,
+                    "best_avg_acc" : best_avg_acc,
+                    "skin_classes" : SKIN_CLASSES,
+                    "eyes_classes" : EYES_CLASSES,
+                    "history"      : history,
                 },
                 "pet_abnormal_omni_best.pth",
             )
-            print(f"  💾 Saved best model! (Epoch {best_epoch} | Avg Acc: {best_avg_acc*100:.2f}%)")
+            print(f"  💾 Saved best model! (Epoch {best_epoch} | Val Avg Acc: {best_avg_acc*100:.2f}%)")
 
+    print(f"\n🏆 Training Finished.")
+    print(f"   Best Epoch: {best_epoch} | Best Val Avg Acc: {best_avg_acc*100:.2f}%")
 
-    print(f"\n🏆 Training Finished. Best Epoch: {best_epoch} | Best Avg Acc: {best_avg_acc*100:.2f}%")
+    # ── 학습 곡선 시각화 ──────────────────────────────────────────────────────
+    print("\n📈 Generating training history plot...")
 
-    # ── 학습 곡선 시각화 ───────────────────────────────────────────
-    print("→3️⃣  Generating training history plot...")
-    import matplotlib.pyplot as plt
+    epochs_x        = [h['epoch']           for h in history]
+    skin_tr_losses  = [h['skin_train_loss']  for h in history]
+    skin_val_losses = [h['skin_val_loss']    for h in history]
+    eyes_tr_losses  = [h['eyes_train_loss']  for h in history]
+    eyes_val_losses = [h['eyes_val_loss']    for h in history]
+    skin_tr_accs    = [h['skin_train_acc']   for h in history]
+    skin_val_accs   = [h['skin_val_acc']     for h in history]
+    eyes_tr_accs    = [h['eyes_train_acc']   for h in history]
+    eyes_val_accs   = [h['eyes_val_acc']     for h in history]
+    avg_val_accs    = [h['avg_val_acc']      for h in history]
 
-    epochs_x     = [h['epoch']     for h in history]
-    skin_losses  = [h['skin_loss'] for h in history]
-    eyes_losses  = [h['eyes_loss'] for h in history]
-    skin_accs    = [h['skin_acc']  for h in history]
-    eyes_accs    = [h['eyes_acc']  for h in history]
-    avg_accs     = [h['avg_acc']   for h in history]
-
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(20, 5))
 
     # ─ Loss ─
-    axes[0].plot(epochs_x, skin_losses, 'b-',  linewidth=2, label='Skin Loss')
-    axes[0].plot(epochs_x, eyes_losses, 'r-',  linewidth=2, label='Eyes Loss')
-    axes[0].axvline(best_epoch, color='gray', linestyle='--', alpha=0.6, label=f'Best Epoch {best_epoch}')
-    axes[0].set_title('Training Loss');  axes[0].set_xlabel('Epoch'); axes[0].set_ylabel('Loss')
-    axes[0].legend(); axes[0].grid(True, alpha=0.3)
+    axes[0].plot(epochs_x, skin_tr_losses,  'b-',  linewidth=2, label='Skin Train Loss')
+    axes[0].plot(epochs_x, skin_val_losses, 'b--', linewidth=2, label='Skin Val Loss')
+    axes[0].plot(epochs_x, eyes_tr_losses,  'r-',  linewidth=2, label='Eyes Train Loss')
+    axes[0].plot(epochs_x, eyes_val_losses, 'r--', linewidth=2, label='Eyes Val Loss')
+    axes[0].axvline(best_epoch, color='gray', linestyle=':', alpha=0.7, label=f'Best Epoch {best_epoch}')
+    axes[0].set_title('Loss');    axes[0].set_xlabel('Epoch'); axes[0].set_ylabel('Loss')
+    axes[0].legend();             axes[0].grid(True, alpha=0.3)
 
     # ─ Accuracy ─
-    axes[1].plot(epochs_x, skin_accs, 'b-',  linewidth=2, label='Skin Acc')
-    axes[1].plot(epochs_x, eyes_accs, 'r-',  linewidth=2, label='Eyes Acc')
-    axes[1].axvline(best_epoch, color='gray', linestyle='--', alpha=0.6, label=f'Best Epoch {best_epoch}')
-    axes[1].set_title('Training Accuracy'); axes[1].set_xlabel('Epoch'); axes[1].set_ylabel('Accuracy')
-    axes[1].set_ylim(0, 1); axes[1].legend(); axes[1].grid(True, alpha=0.3)
+    axes[1].plot(epochs_x, skin_tr_accs,  'b-',  linewidth=2, label='Skin Train Acc')
+    axes[1].plot(epochs_x, skin_val_accs, 'b--', linewidth=2, label='Skin Val Acc')
+    axes[1].plot(epochs_x, eyes_tr_accs,  'r-',  linewidth=2, label='Eyes Train Acc')
+    axes[1].plot(epochs_x, eyes_val_accs, 'r--', linewidth=2, label='Eyes Val Acc')
+    axes[1].axvline(best_epoch, color='gray', linestyle=':', alpha=0.7, label=f'Best Epoch {best_epoch}')
+    axes[1].set_title('Accuracy'); axes[1].set_xlabel('Epoch'); axes[1].set_ylabel('Accuracy')
+    axes[1].set_ylim(0, 1);        axes[1].legend();            axes[1].grid(True, alpha=0.3)
 
-    # ─ Avg Accuracy ─
-    axes[2].plot(epochs_x, avg_accs, 'g-', linewidth=2, label='Avg Acc')
-    axes[2].axvline(best_epoch, color='gray', linestyle='--', alpha=0.6, label=f'Best Epoch {best_epoch}')
-    axes[2].axhline(best_avg_acc, color='green', linestyle=':', alpha=0.6, label=f'Best Acc {best_avg_acc*100:.1f}%')
-    axes[2].set_title('Average Accuracy');  axes[2].set_xlabel('Epoch'); axes[2].set_ylabel('Accuracy')
-    axes[2].set_ylim(0, 1); axes[2].legend(); axes[2].grid(True, alpha=0.3)
+    # ─ Avg Val Accuracy ─
+    axes[2].plot(epochs_x, avg_val_accs, 'g-', linewidth=2, label='Avg Val Acc')
+    axes[2].axvline(best_epoch, color='gray', linestyle=':', alpha=0.7, label=f'Best Epoch {best_epoch}')
+    axes[2].axhline(best_avg_acc, color='green', linestyle='--', alpha=0.6,
+                    label=f'Best Val Acc {best_avg_acc*100:.1f}%')
+    axes[2].set_title('Avg Val Accuracy'); axes[2].set_xlabel('Epoch'); axes[2].set_ylabel('Accuracy')
+    axes[2].set_ylim(0, 1);                axes[2].legend();             axes[2].grid(True, alpha=0.3)
 
     plt.suptitle('Anomaly Model Training History', fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.savefig('anomaly_training_history.png', dpi=150, bbox_inches='tight')
     plt.close()
-    print("  ✅ Saved: pet_abnormal_omni.png")
+    print("  ✅ Saved: anomaly_training_history.png")
 
 
 # ===============================
