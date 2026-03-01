@@ -28,3 +28,9 @@
   - [반려동물 안구 질환 데이터](https://aihub.or.kr/aihubdata/data/view.do?pageIndex=3&currMenu=115&topMenu=100&srchOptnCnd=OPTNCND001&searchKeyword=%EB%8F%99%EB%AC%BC&srchDetailCnd=DETAILCND001&srchOrder=ORDER001&srchPagePer=20&aihubDataSe=data&dataSetSn=562)
   - [반려동물 보행영상을 통한 슬개골 질환 예측](https://aihub.or.kr/aihubdata/data/view.do?pageIndex=1&currMenu=115&topMenu=100&srchOptnCnd=OPTNCND001&searchKeyword=%EA%B0%95%EC%95%84%EC%A7%80&srchDetailCnd=DETAILCND001&srchOrder=ORDER001&srchPagePer=20&aihubDataSe=data&dataSetSn=71878)
   - [반려견, 반려묘 건강정보 데이터](https://aihub.or.kr/aihubdata/data/view.do?pageIndex=1&currMenu=115&topMenu=100&srchOptnCnd=OPTNCND001&searchKeyword=%EB%8F%99%EB%AC%BC&srchDetailCnd=DETAILCND001&srchOrder=ORDER001&srchPagePer=20&aihubDataSe=data&dataSetSn=71520) 
+
+## Architecture
+- 입력 예정
+
+## AI Model Structure
+- 입력 예정
