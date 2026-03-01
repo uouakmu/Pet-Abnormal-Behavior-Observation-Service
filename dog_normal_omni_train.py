@@ -33,6 +33,7 @@ from transformers import (
     Wav2Vec2FeatureExtractor,
     get_cosine_schedule_with_warmup,
 )
+import torch.optim.lr_scheduler as lr_scheduler
 from collections import defaultdict
 from sklearn.utils.class_weight import compute_class_weight
 from tqdm import tqdm
@@ -691,16 +692,26 @@ def _scaler_step(scaler, opt, sched):
         sched.step()
 
 def _save_history_plot(history, best_acc):
-    """매 epoch 호출 → 학습 중단 시에도 마지막 epoch까지의 곡선 확인 가능"""
-    fig, axes = plt.subplots(1, 4, figsize=(20, 4))
+    """매 epoch 호출 — val acc 4개 + LR 곡선(WarmRestarts 재시작 시각화)"""
+    fig, axes = plt.subplots(1, 5, figsize=(26, 4))
     for ax, key, title, color in zip(
-            axes,
+            axes[:4],
             ["behavior_acc", "emotion_acc", "sound_acc", "patella_acc"],
             ["Behavior", "Emotion", "Sound", "Patella"],
             ["steelblue", "seagreen", "tomato", "mediumpurple"]):
         ax.plot([h[key] for h in history], color=color, linewidth=2)
         ax.set_title(f"Dog {title} Val Acc")
         ax.set_xlabel("Epoch"); ax.set_ylim(0, 1); ax.grid(True, alpha=0.3)
+    # LR 곡선 (WarmRestarts 재시작 시점 점선 표시)
+    ax = axes[4]
+    lr_keys = [("emotion_lr","seagreen","Emotion"), ("sound_lr","tomato","Sound"), ("patella_lr","mediumpurple","Patella")]
+    for key, color, label in lr_keys:
+        if history and key in history[0]:
+            ax.plot([h[key] for h in history], color=color, linewidth=1.5, label=label)
+    for restart in [20, 40, 60, 80]:
+        if restart < len(history):
+            ax.axvline(x=restart, color='gray', linestyle=':', alpha=0.5)
+    ax.set_title("LR (WarmRestarts T₀=20)"); ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
     plt.suptitle(f"Dog Normal Omni | Best Avg {best_acc*100:.1f}%", fontweight="bold")
     plt.tight_layout()
     plt.savefig("dog_normal_omni_history.png", dpi=150, bbox_inches="tight")
@@ -777,13 +788,19 @@ def train():
         return get_cosine_schedule_with_warmup(
             opt, num_warmup_steps=max(1, steps // 50), num_training_steps=steps)
 
+    # Behavior: ~96%에 수렴 → 단일 cosine warmup 유지 (재시작 불필요)
     behavior_sched = img_sched(behavior_opt, len(bds))
-    emotion_sched  = img_sched(emotion_opt,  len(eds))
-    patella_sched  = img_sched(patella_opt,  len(pds))
-    audio_sched    = get_cosine_schedule_with_warmup(
-        audio_opt,
-        num_warmup_steps=max(1, (len(sds) // BATCH_SIZE) * 2),
-        num_training_steps=max(1, (len(sds) // BATCH_SIZE) * EPOCHS),
+
+    # Emotion(73% plateau), Sound(~80%), Patella(90% 후 미하락) → WarmRestarts
+    # T_0=20: 20, 40, 60, 80 epoch마다 LR 재시작
+    emotion_sched = lr_scheduler.CosineAnnealingWarmRestarts(
+        emotion_opt, T_0=20, T_mult=1, eta_min=1e-7
+    )
+    audio_sched = lr_scheduler.CosineAnnealingWarmRestarts(
+        audio_opt, T_0=20, T_mult=1, eta_min=1e-8
+    )
+    patella_sched = lr_scheduler.CosineAnnealingWarmRestarts(
+        patella_opt, T_0=20, T_mult=1, eta_min=1e-7
     )
 
     behavior_scaler = torch.amp.GradScaler("cuda")
@@ -830,7 +847,8 @@ def train():
         print("\n😊 Training Emotion (dog)...")
         emotion_model.to(DEVICE).train()
         loss_e, corr_e, tot_e = 0, 0, 0
-        for imgs, labels in tqdm(el, desc="Emotion", leave=False):
+        _n_emotion = len(el)
+        for _i, (imgs, labels) in enumerate(tqdm(el, desc="Emotion", leave=False)):
             imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
             emotion_opt.zero_grad()
             with torch.amp.autocast("cuda"):
@@ -839,18 +857,24 @@ def train():
             emotion_scaler.scale(loss).backward()
             emotion_scaler.unscale_(emotion_opt)
             torch.nn.utils.clip_grad_norm_(emotion_model.parameters(), 1.0)
-            _scaler_step(emotion_scaler, emotion_opt, emotion_sched)
+            prev_s = emotion_scaler.get_scale()
+            emotion_scaler.step(emotion_opt); emotion_scaler.update()
+            # WarmRestarts: fractional epoch step
+            if emotion_scaler.get_scale() == prev_s:
+                emotion_sched.step(epoch + _i / _n_emotion)
             loss_e += loss.item()
             corr_e += (logits.argmax(1) == labels).sum().item()
             tot_e  += labels.size(0)
-        print(f"  → Loss: {loss_e/len(el):.4f} | Train Acc: {corr_e/tot_e*100:.1f}%")
+        _e_lr = emotion_opt.param_groups[1]['lr']
+        print(f"  → Loss: {loss_e/len(el):.4f} | Train Acc: {corr_e/tot_e*100:.1f}% | LR: {_e_lr:.2e}")
         emotion_model.cpu(); clear()
 
         # ── 3. Sound ─────────────────────────────────────────────────────────────
         print("\n🔊 Training Sound (dog)...")
         audio_model.to(DEVICE).train()
         loss_s, corr_s, tot_s = 0, 0, 0
-        for batch in tqdm(sl, desc="Sound", leave=False):
+        _n_sound = len(sl)
+        for _i, batch in enumerate(tqdm(sl, desc="Sound", leave=False)):
             inp, labels = batch["input_values"].to(DEVICE), batch["labels"].to(DEVICE)
             audio_opt.zero_grad()
             with torch.amp.autocast("cuda"):
@@ -859,18 +883,23 @@ def train():
             audio_scaler.scale(loss).backward()
             audio_scaler.unscale_(audio_opt)
             torch.nn.utils.clip_grad_norm_(audio_model.parameters(), 1.0)
-            _scaler_step(audio_scaler, audio_opt, audio_sched)
+            prev_s = audio_scaler.get_scale()
+            audio_scaler.step(audio_opt); audio_scaler.update()
+            if audio_scaler.get_scale() == prev_s:
+                audio_sched.step(epoch + _i / _n_sound)
             loss_s += loss.item()
             corr_s += (out.logits.argmax(1) == labels).sum().item()
             tot_s  += labels.size(0)
-        print(f"  → Loss: {loss_s/len(sl):.4f} | Train Acc: {corr_s/tot_s*100:.1f}%")
+        _so_lr = audio_opt.param_groups[0]['lr']
+        print(f"  → Loss: {loss_s/len(sl):.4f} | Train Acc: {corr_s/tot_s*100:.1f}% | LR: {_so_lr:.2e}")
         audio_model.cpu(); clear()
 
         # ── 4. Patella ───────────────────────────────────────────────────────────
         print("\n🦴 Training Patella (dog)...")
         patella_model.to(DEVICE).train()
         loss_p, corr_p, tot_p = 0, 0, 0
-        for imgs, kps, labels in tqdm(pl, desc="Patella", leave=False):
+        _n_patella = len(pl)
+        for _i, (imgs, kps, labels) in enumerate(tqdm(pl, desc="Patella", leave=False)):
             imgs, kps, labels = imgs.to(DEVICE), kps.to(DEVICE), labels.to(DEVICE)
             patella_opt.zero_grad()
             with torch.amp.autocast("cuda"):
@@ -879,11 +908,15 @@ def train():
             patella_scaler.scale(loss).backward()
             patella_scaler.unscale_(patella_opt)
             torch.nn.utils.clip_grad_norm_(patella_model.parameters(), 1.0)
-            _scaler_step(patella_scaler, patella_opt, patella_sched)
+            prev_s = patella_scaler.get_scale()
+            patella_scaler.step(patella_opt); patella_scaler.update()
+            if patella_scaler.get_scale() == prev_s:
+                patella_sched.step(epoch + _i / _n_patella)
             loss_p += loss.item()
             corr_p += (logits.argmax(1) == labels).sum().item()
             tot_p  += labels.size(0)
-        print(f"  → Loss: {loss_p/len(pl):.4f} | Train Acc: {corr_p/tot_p*100:.1f}%")
+        _p_lr = patella_opt.param_groups[1]['lr']
+        print(f"  → Loss: {loss_p/len(pl):.4f} | Train Acc: {corr_p/tot_p*100:.1f}% | LR: {_p_lr:.2e}")
         patella_model.cpu(); clear()
 
         # ── Validation ────────────────────────────────────────────────────────────
@@ -935,7 +968,10 @@ def train():
         print(f"  Average: {avg*100:.1f}%")
         history.append({"epoch": epoch+1,
                         **{k+"_acc": v for k, v in accs.items()},
-                        "avg_acc": avg})
+                        "avg_acc": avg,
+                        "emotion_lr": emotion_opt.param_groups[1]["lr"],
+                        "sound_lr":   audio_opt.param_groups[0]["lr"],
+                        "patella_lr": patella_opt.param_groups[1]["lr"]})
 
         if avg > best_acc:
             best_acc = avg

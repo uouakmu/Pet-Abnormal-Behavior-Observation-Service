@@ -24,6 +24,7 @@ from transformers import (
     Wav2Vec2FeatureExtractor,
     get_cosine_schedule_with_warmup,
 )
+import torch.optim.lr_scheduler as lr_scheduler
 from collections import defaultdict
 from sklearn.utils.class_weight import compute_class_weight
 from tqdm import tqdm
@@ -315,13 +316,23 @@ def get_class_weights(ds, class_list):
 def clear(): gc.collect(); torch.cuda.empty_cache()
 
 def _save_history_plot(history, best_acc):
-    """매 epoch 호출 → 학습 중단 시에도 마지막 epoch까지의 곡선 확인 가능"""
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    for ax, key, title, color in zip(axes,
+    """매 epoch 호출 — val acc 3개 + LR 곡선(WarmRestarts 재시작 시각화)"""
+    fig, axes = plt.subplots(1, 4, figsize=(22, 4))
+    for ax, key, title, color in zip(axes[:3],
             ["behavior_acc","emotion_acc","sound_acc"],
-            ["Behavior","Emotion","Sound"],["b","g","r"]):
+            ["Behavior","Emotion","Sound"],["steelblue","seagreen","tomato"]):
         ax.plot([h[key] for h in history], color=color, linewidth=2)
         ax.set_title(f"Cat {title} Val Acc"); ax.set_ylim(0,1); ax.grid(True, alpha=0.3)
+    # LR 곡선
+    ax = axes[3]
+    if history and "emotion_lr" in history[0]:
+        ax.plot([h["emotion_lr"] for h in history], color="seagreen", linewidth=1.5, label="Emotion LR")
+    if history and "sound_lr" in history[0]:
+        ax.plot([h["sound_lr"]   for h in history], color="tomato",   linewidth=1.5, label="Sound LR")
+    for restart in [20, 40, 60, 80]:
+        if restart < len(history):
+            ax.axvline(x=restart, color='gray', linestyle=':', alpha=0.5)
+    ax.set_title("LR (WarmRestarts T₀=20)"); ax.legend(); ax.grid(True, alpha=0.3)
     plt.suptitle(f"Cat Normal Omni | Best Avg {best_acc*100:.1f}%", fontweight="bold")
     plt.tight_layout()
     plt.savefig("cat_normal_omni_history.png", dpi=150, bbox_inches="tight")
@@ -372,14 +383,17 @@ def train():
         steps = (n_samples // BATCH_SIZE) * EPOCHS
         return get_cosine_schedule_with_warmup(opt, num_warmup_steps=max(1, steps//50), num_training_steps=max(1, steps))
 
+    # Behavior: 99%에 수렴 → 단일 cosine warmup 유지 (재시작 불필요)
     behavior_sched = img_sched(behavior_opt, len(bds))
-    emotion_sched  = img_sched(emotion_opt,  len(eds))
-    # [FIX-SOUND] scheduler total steps를 AUDIO_BATCH_SIZE 기준으로 재계산
-    _audio_steps_per_epoch = max(1, len(sds) // AUDIO_BATCH_SIZE)
-    audio_sched    = get_cosine_schedule_with_warmup(
-        audio_opt,
-        num_warmup_steps=max(1, _audio_steps_per_epoch * 3),
-        num_training_steps=max(1, _audio_steps_per_epoch * EPOCHS),
+
+    # Emotion(81% plateau) + Sound(~80%, 진동) → WarmRestarts
+    # T_0=20: 20, 40, 60, 80 epoch마다 LR 재시작 → plateau 탈출
+    # step(epoch + i/n_batches): 배치 단위 호출로 LR 곡선이 부드럽게 유지
+    emotion_sched = lr_scheduler.CosineAnnealingWarmRestarts(
+        emotion_opt, T_0=20, T_mult=1, eta_min=1e-7
+    )
+    audio_sched = lr_scheduler.CosineAnnealingWarmRestarts(
+        audio_opt, T_0=20, T_mult=1, eta_min=1e-8
     )
 
     # [FIX 1] val 로더는 is_train=False → drop_last=False → ZeroDivisionError 방지
@@ -433,7 +447,8 @@ def train():
         print("\n😊 Training Emotion (cat)...")
         emotion_model.to(DEVICE).train()
         loss_e, corr_e, tot_e = 0, 0, 0
-        for imgs, labels in tqdm(el, desc="Emotion", leave=False):
+        _n_emotion = len(el)
+        for _i, (imgs, labels) in enumerate(tqdm(el, desc="Emotion", leave=False)):
             imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
             emotion_opt.zero_grad()
             with torch.amp.autocast("cuda"):
@@ -442,20 +457,22 @@ def train():
             emotion_scaler.scale(loss).backward()
             emotion_scaler.unscale_(emotion_opt)
             torch.nn.utils.clip_grad_norm_(emotion_model.parameters(), 1.0)
-            # [FIX 2] optimizer가 실제로 실행됐을 때만 scheduler.step()
             prev_scale = emotion_scaler.get_scale()
             emotion_scaler.step(emotion_opt); emotion_scaler.update()
+            # WarmRestarts: fractional epoch step (부드러운 LR 곡선)
             if emotion_scaler.get_scale() == prev_scale:
-                emotion_sched.step()
+                emotion_sched.step(epoch + _i / _n_emotion)
             loss_e += loss.item(); corr_e += (logits.argmax(1)==labels).sum().item(); tot_e += labels.size(0)
-        print(f"  → Loss: {loss_e/len(el):.4f} | Train Acc: {corr_e/tot_e*100:.1f}%")
+        _e_lr = emotion_opt.param_groups[1]['lr']
+        print(f"  → Loss: {loss_e/len(el):.4f} | Train Acc: {corr_e/tot_e*100:.1f}% | LR: {_e_lr:.2e}")
         emotion_model.cpu(); clear()
 
         # ── 3. Sound ─────────────────────────────────────────────────────────────
         print("\n🔊 Training Sound (cat)...")
         audio_model.to(DEVICE).train()
         loss_s, corr_s, tot_s = 0, 0, 0
-        for batch in tqdm(sl, desc="Sound", leave=False):
+        _n_sound = len(sl)
+        for _i, batch in enumerate(tqdm(sl, desc="Sound", leave=False)):
             inp, labels = batch["input_values"].to(DEVICE), batch["labels"].to(DEVICE)
             audio_opt.zero_grad()
             with torch.amp.autocast("cuda"):
@@ -464,13 +481,14 @@ def train():
             audio_scaler.scale(loss).backward()
             audio_scaler.unscale_(audio_opt)
             torch.nn.utils.clip_grad_norm_(audio_model.parameters(), 1.0)
-            # [FIX 2] optimizer가 실제로 실행됐을 때만 scheduler.step()
             prev_scale = audio_scaler.get_scale()
             audio_scaler.step(audio_opt); audio_scaler.update()
+            # WarmRestarts: fractional epoch step
             if audio_scaler.get_scale() == prev_scale:
-                audio_sched.step()
+                audio_sched.step(epoch + _i / _n_sound)
             loss_s += loss.item(); corr_s += (out.logits.argmax(1)==labels).sum().item(); tot_s += labels.size(0)
-        print(f"  → Loss: {loss_s/len(sl):.4f} | Train Acc: {corr_s/tot_s*100:.1f}%")
+        _s_lr = audio_opt.param_groups[0]['lr']
+        print(f"  → Loss: {loss_s/len(sl):.4f} | Train Acc: {corr_s/tot_s*100:.1f}% | LR: {_s_lr:.2e}")
         audio_model.cpu(); clear()
 
         # ── Validation ────────────────────────────────────────────────────────────
@@ -499,7 +517,11 @@ def train():
 
         avg = sum(accs.values()) / len(accs)
         print(f"  Average: {avg*100:.1f}%")
-        history.append({"epoch": epoch+1, **{k+"_acc": v for k,v in accs.items()}, "avg_acc": avg})
+        history.append({"epoch": epoch+1,
+                         **{k+"_acc": v for k,v in accs.items()},
+                         "avg_acc": avg,
+                         "emotion_lr": emotion_opt.param_groups[1]["lr"],
+                         "sound_lr":   audio_opt.param_groups[0]["lr"]})
 
         if avg > best_acc:
             best_acc = avg
