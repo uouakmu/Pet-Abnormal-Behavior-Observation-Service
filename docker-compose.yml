@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/FastAPI/key:/app/key:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Run Uvicorn directly for the backend
+    command: [ "uvicorn", "FastAPI.main.Test:app", "--host", "0.0.0.0", "--port", "8000", "--reload" ]
+  frontend:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+  # ai_model:
+  #   build:
+  #     context: ./AI Model
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "8001:8000"

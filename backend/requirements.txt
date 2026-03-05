@@ -1,0 +1,5 @@
+# Example FastAPI backend requirements
+fastapi
+uvicorn
+pydantic
+firebase-admin

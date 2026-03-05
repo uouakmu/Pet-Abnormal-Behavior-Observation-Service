@@ -57,3 +57,6 @@ app.*.map.json
 
 #서버 api키 관련
 **/key/testApi.json
+
+#안티그래비티 룰 설정
+.agents/
