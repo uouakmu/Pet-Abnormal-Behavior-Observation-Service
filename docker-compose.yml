@@ -9,8 +9,16 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/FastAPI/key:/app/key:ro
+      - ./AI Model/AI_pth:/app/AI_pth:ro
     environment:
       - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
     # Run Uvicorn directly for the backend
     command: [ "uvicorn", "FastAPI.main.Test:app", "--host", "0.0.0.0", "--port", "8000", "--reload" ]
   frontend:

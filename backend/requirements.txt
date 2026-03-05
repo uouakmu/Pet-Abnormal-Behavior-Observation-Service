@@ -1,5 +1,14 @@
-# Example FastAPI backend requirements
+# FastAPI and server
 fastapi
 uvicorn
 pydantic
 firebase-admin
+
+# File uploads
+python-multipart
+
+# AI Model inference
+torch
+torchvision
+Pillow
+numpy
