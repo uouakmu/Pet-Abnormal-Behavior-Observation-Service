@@ -1,10 +1,24 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile, Form
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import firebase_admin
 from firebase_admin import credentials, db
 from fastapi.middleware.cors import CORSMiddleware
+import io
 
-app = FastAPI()
+# AI Inference module import
+from FastAPI.main.model_inference import ai_engine
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Load AI models
+    print("Initializing AI Models...")
+    ai_engine.load_models()
+    yield
+    # Shutdown
+    print("Shutting down...")
+
+app = FastAPI(lifespan=lifespan)
 
 # 1. 파이어베이스 초기화 (다운로드한 키 파일 이름을 입력하세요)
 cred = credentials.Certificate("key/testApi.json")
@@ -97,4 +111,25 @@ async def get_all_pet_info(user_id: str):
         }
     else:
         return {"status": "error", "message": "반려동물 정보가 없습니다."}
+
+# AI 질환 분석 API
+@app.post("/api/analyze-disease")
+async def analyze_disease(
+    pet_type: str = Form(...),
+    disease_type: str = Form(...),
+    file: UploadFile = File(...)
+):
+    try:
+        contents = await file.read()
+        
+        # ai_engine 추론 로직 호출
+        result = ai_engine.analyze(
+            image_bytes=contents,
+            pet_type=pet_type,
+            disease_type=disease_type
+        )
+        
+        return result
+    except Exception as e:
+        return {"status": "error", "message": f"Server processing error: {str(e)}"}
 

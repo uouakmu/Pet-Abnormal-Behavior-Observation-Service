@@ -1,0 +1,7 @@
+# Sample dependencies for a PyTorch backend serving AI
+fastapi
+uvicorn
+# Requires manual specification of PyTorch depending on CPU/GPU
+# torch torchvision torchaudio 
+# numpy
+# opencv-python-headless

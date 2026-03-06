@@ -3,6 +3,7 @@ import 'package:pet_diary/mainPage/total_diary.dart';
 import 'package:pet_diary/mainPage/odd_pet.dart';
 import 'package:pet_diary/mainPage/daily_pet.dart';
 import 'package:pet_diary/discription/onboarding_page.dart';
+import 'package:pet_diary/mainPage/examination_page.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:pet_diary/mainPage/mypage.dart';
@@ -73,7 +74,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
         elevation: 0,
         leading: const Icon(Icons.menu, color: Colors.black),
         title: Text(
-            _selectedIndex == 2 ? 'Daily Behavior Diary' : (_selectedIndex == 4 ? '마이페이지' : '준비 중'),
+            _selectedIndex == 1 ? 'AI 검진' : _selectedIndex == 2 ? 'Daily Behavior Diary' : (_selectedIndex == 4 ? '마이페이지' : '준비 중'),
             style: const TextStyle(color: Colors.black, fontSize: 14, fontWeight: FontWeight.bold)
         ),
         centerTitle: true,
@@ -81,8 +82,9 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
       ),
 
       // 선택된 탭 인덱스에 따라 홈 화면 또는 준비중 화면 표시
-      // 선택된 탭 인덱스에 따라 홈 화면, 마이페이지 또는 준비중 화면 표시
-      body: _selectedIndex == 2
+      body: _selectedIndex == 1
+          ? ExaminationPage(petData: petData) // 새로 만든 AI 검진 페이지 연결
+          : _selectedIndex == 2
           ? _buildDashboardHome() // 홈 대시보드
           : _selectedIndex == 4
           ? MyPage(petData: petData)    // 마이페이지 (새로 만든 파일 연결)
@@ -100,7 +102,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
         unselectedFontSize: 11,
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.stars), label: '모니터링'),
-          BottomNavigationBarItem(icon: Icon(Icons.circle_outlined), label: '미정'),
+          BottomNavigationBarItem(icon: Icon(Icons.health_and_safety), label: '검진'),
           BottomNavigationBarItem(icon: Icon(Icons.home), label: '홈'),
           BottomNavigationBarItem(icon: Icon(Icons.favorite), label: '사진첩'),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: '마이페이지'),
