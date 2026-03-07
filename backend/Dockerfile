@@ -7,6 +7,9 @@ WORKDIR /app
 # Upgrade pip to the latest version
 RUN pip install --upgrade pip
 
+# Install OS-level dependencies for OpenCV and librosa
+RUN apt-get update && apt-get install -y ffmpeg libsm6 libxext6 libsndfile1 && rm -rf /var/lib/apt/lists/*
+
 # Copy the requirements file into the container at /app
 # We assume there is or will be a requirements.txt file in backend/
 COPY requirements.txt ./
