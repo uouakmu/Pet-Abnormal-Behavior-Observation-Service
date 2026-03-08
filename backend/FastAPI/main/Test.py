@@ -57,23 +57,65 @@ class User(BaseModel):
 
 @app.post("/login/")
 def login(user: User):
-    ref = firebase_db.reference(f'users/{user.user_id}')
-    user_data = ref.get()
+    try:
+        ref = firebase_db.reference(f'users/{user.user_id}')
+        user_data = ref.get()
 
-    if user_data and user_data.get('password') == user.password:
-        # Check MongoDB for pet info
-        db_client = get_db()
-        user_record = db_client["users"].find_one({"user_id": user.user_id})
-        has_pet_info = bool(user_record and "pet_info" in user_record)
+        if not user_data:
+            return {"status": "error", "message": "아이디가 존재하지 않습니다."}
 
-        return {
-            "status": "success",
-            "message": "로그인 성공",
-            "user_id": user.user_id,
-            "has_pet_info": has_pet_info # 플러터에 알려줌
-        }
-    else:
-        return {"status": "error", "message": "아이디 또는 비밀번호가 틀렸습니다."}
+        # 비밀번호 체크 (딕셔너리 또는 문자열 구조 모두 대응)
+        fb_password = ""
+        if isinstance(user_data, dict):
+            fb_password = user_data.get('password')
+        else:
+            fb_password = user_data # 단순 문자열인 경우
+
+        if fb_password == user.password:
+            # MongoDB Sync & Migration
+            db_client = get_db()
+            user_record = db_client["users"].find_one({"user_id": user.user_id})
+            
+            # Firebase에 pet_info가 있는지 확인
+            fb_pet_info = None
+            if isinstance(user_data, dict):
+                fb_pet_info = user_data.get('pet_info')
+
+            if not user_record:
+                # MongoDB에 없는 계정이면 새로 생성 (Auo-Migration)
+                print(f"Migrating user {user.user_id} to MongoDB...")
+                new_doc = {
+                    "user_id": user.user_id,
+                    "created_at": datetime.datetime.now()
+                }
+                if fb_pet_info:
+                    new_doc["pet_info"] = fb_pet_info
+                
+                db_client["users"].insert_one(new_doc)
+                has_pet_info = bool(fb_pet_info)
+            else:
+                # 이미 있다면 pet_info 존재 여부 확인
+                has_pet_info = "pet_info" in user_record
+                # 만약 MongoDB에는 없는데 Firebase에만 pet_info가 있다면 업데이트
+                if not has_pet_info and fb_pet_info:
+                    db_client["users"].update_one(
+                        {"user_id": user.user_id},
+                        {"$set": {"pet_info": fb_pet_info}}
+                    )
+                    has_pet_info = True
+
+            return {
+                "status": "success",
+                "message": "로그인 성공",
+                "user_id": user.user_id,
+                "has_pet_info": has_pet_info
+            }
+        else:
+            return {"status": "error", "message": "아이디 또는 비밀번호가 틀렸습니다."}
+            
+    except Exception as e:
+        print(f"Login error: {str(e)}")
+        return {"status": "error", "message": f"서버 오류가 발생했습니다: {str(e)}"}
 
 @app.post("/signup/")
 async def signup(user: User):

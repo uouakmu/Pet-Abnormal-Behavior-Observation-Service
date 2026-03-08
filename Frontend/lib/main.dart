@@ -44,7 +44,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
     _fetchRecentDiaries();
   }
   Future<void> _fetchPetInfo() async {
-    final url = Uri.parse('http://localhost:8000/user-pet-info/${widget.userId}');
+    final url = Uri.parse('http://localhost:8080/user-pet-info/${widget.userId}');
 
     try {
       final response = await http.get(url);
