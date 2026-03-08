@@ -19,3 +19,4 @@ minio
 opencv-python-headless
 librosa
 transformers
+groq
