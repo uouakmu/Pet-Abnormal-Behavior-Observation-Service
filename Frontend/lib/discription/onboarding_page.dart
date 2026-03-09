@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:pet_diary/discription/onboarding_page2.dart';
+import 'package:flutter_screenutil/flutter_screenutil.dart';
 
 class OnboardingPage extends StatelessWidget {
   const OnboardingPage({super.key});
@@ -14,17 +15,17 @@ class OnboardingPage extends StatelessWidget {
       backgroundColor: Colors.white,
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+          padding: EdgeInsets.symmetric(horizontal: 24),
           child: Column(
             children: [
-              const SizedBox(height: 40),
+              SizedBox(height: 40),
               // 1. 이미지 영역 (나중에 이미지를 바꿀 수 있는 박스)
               Container(
                 width: double.infinity,
                 height: MediaQuery.of(context).size.height * 0.45,
                 decoration: BoxDecoration(
                   color: backgroundColor,
-                  borderRadius: BorderRadius.circular(30),
+                  borderRadius: BorderRadius.circular(30.r),
                 ),
                 child: Center(
                   // 이 부분을 Image.asset('경로')로 바꾸시면 됩니다.
@@ -35,33 +36,33 @@ class OnboardingPage extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(height: 30),
+              SizedBox(height: 30),
 
               // 2. 인디케이터 (현재 2번째 페이지 활성화)
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: List.generate(5, (index) => Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 4),
-                  width: index == 0 ? 40 : 30, // 2번째 바를 길게 표시
+                  margin: EdgeInsets.symmetric(horizontal: 4),
+                  width: index == 0 ? 40 : 30, // 1번째 바를 길게 표시
                   height: 6,
                   decoration: BoxDecoration(
                     color: index == 0 ? pointColor : Colors.grey.shade300,
-                    borderRadius: BorderRadius.circular(3),
+                    borderRadius: BorderRadius.circular(3.r),
                   ),
                 )),
               ),
-              const SizedBox(height: 40),
+              SizedBox(height: 40),
 
               // 3. 텍스트 영역
-              const Text(
-                "찬혁이 형이 똥을 싸면 알림22",
+              Text(
+                "첫 번째 페이지.222",
                 style: TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.bold,
                   color: Colors.black87,
                 ),
               ),
-              const SizedBox(height: 12),
+              SizedBox(height: 12),
               Text(
                 "우리 아이의 평소와 다른 움직임을\n실시간으로 분석하여 알려드려요.",
                 textAlign: TextAlign.center,
@@ -85,18 +86,18 @@ class OnboardingPage extends StatelessWidget {
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => OnboardingPage2(),
+                        builder: (context) => const OnboardingPage2(),
                       ),
                     );
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: pointColor,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(12.r),
                     ),
                     elevation: 0,
                   ),
-                  child: const Text(
+                  child: Text(
                     "다음으로",
                     style: TextStyle(
                       fontSize: 18,
@@ -106,7 +107,7 @@ class OnboardingPage extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
+              SizedBox(height: 20),
             ],
           ),
         ),

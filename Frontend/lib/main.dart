@@ -10,11 +10,23 @@ import 'package:pet_diary/mainPage/mypage.dart';
 import 'package:pet_diary/mainPage/photo_gallery.dart'; // Phase 4 Photo Gallery
 import 'package:pet_diary/mainPage/diary_detail.dart'; // Phase 4.1 Detail View
 
-void main() {
-  runApp(const MaterialApp(
-    home: OnboardingPage(),
-    debugShowCheckedModeBanner: false,
-  ));
+import 'package:flutter_screenutil/flutter_screenutil.dart';
+
+void main() async {
+  await ScreenUtil.ensureScreenSize();
+  runApp(
+    ScreenUtilInit(
+      designSize: const Size(390, 844), // Standard standard mobile size
+      minTextAdapt: true,
+      splitScreenMode: true,
+      builder: (context, child) {
+        return const MaterialApp(
+          home: OnboardingPage(),
+          debugShowCheckedModeBanner: false,
+        );
+      },
+    ),
+  );
 }
 
 class PetHealthDashboard extends StatefulWidget {
@@ -144,26 +156,26 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
   // --- 메인 홈 대시보드 UI ---
   Widget _buildDashboardHome() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildHeaderCard(),
-          const SizedBox(height: 16),
+          SizedBox(height: 12),
           Row(
             children: [
               _buildActionButton(Icons.book, '일상 일기', '기분 & 활동량', Colors.blue,
                       () => Navigator.push(context, MaterialPageRoute(builder: (context) => daily_pet()))),
-              const SizedBox(width: 12),
+              SizedBox(width: 8),
               _buildActionButton(Icons.error_outline, '이상 행동', '건강 체크', Colors.orange,
                       () => Navigator.push(context, MaterialPageRoute(builder: (context) => PageB()))),
             ],
           ),
-          const SizedBox(height: 24),
+          SizedBox(height: 16),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
+              Text(
                 '최근 일기',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
@@ -186,6 +198,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
               ),
             ],
           ),
+
           const SizedBox(height: 12),
           isDiaryLoading
               ? const Center(child: CircularProgressIndicator())
@@ -210,21 +223,22 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
                         );
                       }).toList(),
                     ),
+ main
           // ------------------------------------------
 
-          const SizedBox(height: 24),
+          SizedBox(height: 12),
           _buildTrendSection(),
-          const SizedBox(height: 32),
-          const Center(
+          SizedBox(height: 16),
+          Center(
             child: Column(
               children: [
                 Text('AI가 24시간 콩이를 모니터링하고 있어요', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                SizedBox(height: 4),
+                SizedBox(height: 2),
                 Text('8가지 데이터셋 기반 건강 분석 시스템', style: TextStyle(color: Colors.grey, fontSize: 11)),
               ],
             ),
           ),
-          const SizedBox(height: 40),
+          SizedBox(height: 20),
         ],
       ),
     );
@@ -236,27 +250,27 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
     String petName = petData?['pet_name'] ?? '콩이';
     String petType = petData?['pet_type'] ?? '반려동물';
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: EdgeInsets.all(14),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(16.r),
         gradient: const LinearGradient(colors: [Colors.purple, Colors.orangeAccent]),
       ),
       child: Column(
         children: [
           Row(
             children: [
-              const CircleAvatar(radius: 25, backgroundColor: Colors.white),
-              const SizedBox(width: 12),
+              CircleAvatar(radius: 20.r, backgroundColor: Colors.white),
+              SizedBox(width: 8),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('$petName의 건강일기', style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                  const Text('AI 기반 반려동물 케어', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                  Text('$petName의 건강일기', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                  Text('AI 기반 반려동물 케어', style: TextStyle(color: Colors.white70, fontSize: 9)),
                 ],
               )
             ],
           ),
-          const SizedBox(height: 20),
+          SizedBox(height: 9),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
@@ -273,8 +287,8 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
   Widget _buildStatItem(String value, String label) {
     return Column(
       children: [
-        Text(value, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
-        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        Text(value, style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+        Text(label, style: TextStyle(color: Colors.white70, fontSize: 9)),
       ],
     );
   }
@@ -283,16 +297,16 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
     return Expanded(
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(15),
+        borderRadius: BorderRadius.circular(12.r),
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 20),
-          decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(15)),
+          padding: EdgeInsets.symmetric(vertical: 9),
+          decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(9.r)),
           child: Column(
             children: [
-              Icon(icon, color: Colors.white, size: 30),
-              const SizedBox(height: 8),
-              Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-              Text(subTitle, style: const TextStyle(color: Colors.white70, fontSize: 10)),
+              Icon(icon, color: Colors.white, size: 20),
+              SizedBox(height: 2.5),
+              Text(title, style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+              Text(subTitle, style: TextStyle(color: Colors.white70, fontSize: 9)),
             ],
           ),
         ),
@@ -305,33 +319,37 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
     String preview = contentSummary.length > 30 ? '${contentSummary.substring(0, 30)}...' : contentSummary;
     
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
+      margin: EdgeInsets.only(bottom: 8),
+      padding: EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(15),
+        borderRadius: BorderRadius.circular(12.r),
         boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4)],
       ),
       child: Row(
         children: [
+
           Container(width: 50, height: 50, decoration: BoxDecoration(color: Colors.purple[100], borderRadius: BorderRadius.circular(8)), child: const Icon(Icons.menu_book, color: Colors.purple)),
           const SizedBox(width: 12),
+ main
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+
                 Text(date, style: const TextStyle(fontWeight: FontWeight.bold)),
                 Text(preview, style: const TextStyle(color: Colors.grey, fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis),
                 Row(
                   children: [
                     const Icon(Icons.pets, size: 14, color: Colors.green),
                     const Text(' AI 일기 생성됨', style: TextStyle(fontSize: 10)),
+ main
                     if (hasWarning) ...[
-                      const SizedBox(width: 8),
+                      SizedBox(width: 6),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(color: Colors.orange[100], borderRadius: BorderRadius.circular(4)),
-                        child: const Text('주의사항', style: TextStyle(color: Colors.orange, fontSize: 10)),
+                        padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        decoration: BoxDecoration(color: Colors.orange[100], borderRadius: BorderRadius.circular(4.r)),
+                        child: Text('주의사항', style: TextStyle(color: Colors.orange, fontSize: 10)),
                       )
                     ]
                   ],
@@ -339,7 +357,9 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
               ],
             ),
           ),
+
           const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.grey),
+ main
         ],
       ),
     );
@@ -347,36 +367,36 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
 
   Widget _buildTrendSection() {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(15),
+        borderRadius: BorderRadius.circular(12.r),
         boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4)],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
               Icon(Icons.trending_up, color: Colors.green, size: 20),
-              SizedBox(width: 8),
+              SizedBox(width: 6),
               Text('이번 주 건강 트렌드', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             ],
           ),
-          const SizedBox(height: 16),
+          SizedBox(height: 10),
           _buildTrendRow('평균 활동량', 0.82, Colors.green, '82%'),
           _buildTrendRow('체중 관리', 0.95, Colors.blue, '95%'),
           _buildTrendRow('스트레스 관리', 0.88, Colors.purple, '88%'),
-          const SizedBox(height: 16),
+          SizedBox(height: 10),
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.all(12),
+            padding: EdgeInsets.all(10),
             decoration: BoxDecoration(
               color: Colors.green[50],
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(8.r),
               border: Border.all(color: Colors.green[100]!),
             ),
-            child: const Text(
+            child: Text(
               '🎉 콩이는 이번 주 매우 건강하게 지냈어요! 활동량과 식사 패턴이 안정적입니다.',
               style: TextStyle(color: Colors.green, fontSize: 13),
             ),
@@ -388,14 +408,14 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
 
   Widget _buildTrendRow(String label, double value, Color color, String percent) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      padding: EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          Expanded(flex: 3, child: Text(label, style: const TextStyle(fontSize: 13))),
+          Expanded(flex: 3, child: Text(label, style: TextStyle(fontSize: 13))),
           Expanded(
             flex: 7,
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(10.r),
               child: LinearProgressIndicator(
                 value: value,
                 backgroundColor: Colors.grey[200],
@@ -404,7 +424,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
               ),
             ),
           ),
-          const SizedBox(width: 10),
+          SizedBox(width: 8),
           Text(percent, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.bold)),
         ],
       ),

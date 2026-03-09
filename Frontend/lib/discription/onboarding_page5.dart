@@ -3,6 +3,7 @@ import 'package:pet_diary/pet_name_input_page.dart';
 import 'package:http/http.dart' as http; // 상단에 추가
 import 'dart:convert'; // JSON 변환을 위해 추가
 import 'package:pet_diary/main.dart';
+import 'package:flutter_screenutil/flutter_screenutil.dart';
 
 class OnboardingPage5 extends StatelessWidget {
   const OnboardingPage5({super.key});
@@ -115,17 +116,17 @@ class OnboardingPage5 extends StatelessWidget {
       backgroundColor: Colors.white,
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+          padding: EdgeInsets.symmetric(horizontal: 24),
           child: Column(
             children: [
-              const SizedBox(height: 40),
+              SizedBox(height: 40),
               // 1. 이미지 영역 (나중에 이미지를 바꿀 수 있는 박스)
               Container(
                 width: double.infinity,
                 height: MediaQuery.of(context).size.height * 0.45,
                 decoration: BoxDecoration(
                   color: backgroundColor,
-                  borderRadius: BorderRadius.circular(30),
+                  borderRadius: BorderRadius.circular(30.r),
                 ),
                 child: Center(
                   // 이 부분을 Image.asset('경로')로 바꾸시면 됩니다.
@@ -136,25 +137,25 @@ class OnboardingPage5 extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(height: 30),
+              SizedBox(height: 30),
 
               // 2. 인디케이터 (현재 2번째 페이지 활성화)
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: List.generate(5, (index) => Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  margin: EdgeInsets.symmetric(horizontal: 4),
                   width: index == 4 ? 40 : 30, // 2번째 바를 길게 표시
                   height: 6,
                   decoration: BoxDecoration(
                     color: index == 4 ? pointColor : Colors.grey.shade300,
-                    borderRadius: BorderRadius.circular(3),
+                    borderRadius: BorderRadius.circular(3.r),
                   ),
                 )),
               ),
-              const SizedBox(height: 40),
+              SizedBox(height: 40),
 
               // 3. 텍스트 영역
-              const Text(
+              Text(
                 "마지막 페이지입니다.",
                 style: TextStyle(
                   fontSize: 20,
@@ -162,7 +163,7 @@ class OnboardingPage5 extends StatelessWidget {
                   color: Colors.black87,
                 ),
               ),
-              const SizedBox(height: 12),
+              SizedBox(height: 12),
               Text(
                 "우리 아이의 평소와 다른 움직임을\n실시간으로 분석하여 알려드려요.",
                 textAlign: TextAlign.center,
@@ -196,11 +197,11 @@ class OnboardingPage5 extends StatelessWidget {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: pointColor,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(12.r),
                     ),
                     elevation: 0,
                   ),
-                  child: const Text(
+                  child: Text(
                     "닫기",
                     style: TextStyle(
                       fontSize: 18,
@@ -210,7 +211,7 @@ class OnboardingPage5 extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
+              SizedBox(height: 20),
             ],
           ),
         ),
@@ -222,29 +223,29 @@ class OnboardingPage5 extends StatelessWidget {
   Widget _buildLoginSheet(BuildContext context) {
 
     return Container(
-      height: MediaQuery.of(context).size.height * 0.45,
-      padding: const EdgeInsets.all(24),
-      decoration: const BoxDecoration(
+      height: MediaQuery.of(context).size.height * 0.50,
+      padding: EdgeInsets.symmetric(horizontal: 24.w, vertical: 20.h),
+      decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20.r)),
       ),
       child: Column(
         children: [
           // 상단 바 (Handle)
           Container(
-            width: 40,
-            height: 4,
-            margin: const EdgeInsets.only(bottom: 20), // 이 코드로 교체하세요
+            width: 40.w,
+            height: 4.h,
+            margin: EdgeInsets.only(bottom: 24.h), // 이 코드로 교체하세요
             decoration: BoxDecoration(
               color: Colors.grey[300],
-              borderRadius: BorderRadius.circular(2),
+              borderRadius: BorderRadius.circular(2.r),
             ),
           ),
-          const Text(
+          Text(
             "로그인 및 시작하기",
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
           ),
-          const SizedBox(height: 30),
+          SizedBox(height: 20.h),
 
           // 카카오 로그인 버튼
           _buildSNSButton(
@@ -256,7 +257,7 @@ class OnboardingPage5 extends StatelessWidget {
               // 실제 로그인 로직 구현부
             },
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: 10.h),
 
           // 구글 로그인 버튼
           _buildSNSButton(
@@ -269,7 +270,7 @@ class OnboardingPage5 extends StatelessWidget {
             },
             isBorder: true,
           ),
-          const SizedBox(height: 24),
+          SizedBox(height: 10.h),
 
           // SNS 버튼 리스트 아래에 추가할 '이메일 로그인' 버튼
           _buildSNSButton(
@@ -328,20 +329,20 @@ class OnboardingPage5 extends StatelessWidget {
       onTap: onTap,
       child: Container(
         width: double.infinity,
-        height: 52,
+        height: 48.h,
         decoration: BoxDecoration(
           color: color,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(12.r),
           border: isBorder ? Border.all(color: Colors.grey.shade300) : null,
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, color: textColor),
-            const SizedBox(width: 10),
+            Icon(icon, color: textColor, size: 22),
+            SizedBox(width: 10.w),
             Text(
               label,
-              style: TextStyle(color: textColor, fontWeight: FontWeight.w600),
+              style: TextStyle(color: textColor, fontWeight: FontWeight.w600, fontSize: 15),
             ),
           ],
         ),
