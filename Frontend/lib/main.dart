@@ -155,6 +155,8 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
 
   // --- 메인 홈 대시보드 UI ---
   Widget _buildDashboardHome() {
+    String petName = petData?['pet_name'] ?? '콩이';
+    String petType = petData?['pet_type'] ?? '반려동물';
     return SingleChildScrollView(
       padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: Column(
@@ -165,7 +167,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
           Row(
             children: [
               _buildActionButton(Icons.book, '일상 일기', '기분 & 활동량', Colors.blue,
-                      () => Navigator.push(context, MaterialPageRoute(builder: (context) => daily_pet()))),
+                      () => Navigator.push(context, MaterialPageRoute(builder: (context) => daily_pet(petData: petData)))),
               SizedBox(width: 8),
               _buildActionButton(Icons.error_outline, '이상 행동', '건강 체크', Colors.orange,
                       () => Navigator.push(context, MaterialPageRoute(builder: (context) => PageB()))),
@@ -231,7 +233,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
           Center(
             child: Column(
               children: [
-                Text('AI가 24시간 콩이를 모니터링하고 있어요', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                Text('AI가 24시간 $petName를 모니터링하고 있어요', style: TextStyle(color: Colors.grey, fontSize: 12)),
                 SizedBox(height: 2),
                 Text('8가지 데이터셋 기반 건강 분석 시스템', style: TextStyle(color: Colors.grey, fontSize: 11)),
               ],
@@ -363,6 +365,8 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
   }
 
   Widget _buildTrendSection() {
+    String petName = petData?['pet_name'] ?? '콩이';
+    String petType = petData?['pet_type'] ?? '반려동물';
     return Container(
       padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -394,7 +398,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
               border: Border.all(color: Colors.green[100]!),
             ),
             child: Text(
-              '🎉 콩이는 이번 주 매우 건강하게 지냈어요! 활동량과 식사 패턴이 안정적입니다.',
+              '🎉 $petName는 이번 주 매우 건강하게 지냈어요! 활동량과 식사 패턴이 안정적입니다.',
               style: TextStyle(color: Colors.green, fontSize: 13),
             ),
           ),

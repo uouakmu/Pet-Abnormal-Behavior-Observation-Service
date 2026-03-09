@@ -3,10 +3,14 @@ import 'package:pet_diary/mainPage/pet_activity.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 
 class daily_pet extends StatelessWidget {
-  const daily_pet({super.key});
+  final Map<String, dynamic>? petData; // 데이터를 담을 변수
+
+  // 생성자를 통해 데이터를 필수 인자로 받음
+  const daily_pet({super.key, required this.petData});
 
   @override
   Widget build(BuildContext context) {
+    final String petName = petData?['pet_name'] ?? '콩이';
     return Scaffold(
       backgroundColor: const Color(0xFFF9F9F9),
       // 상단 앱바 (이미지의 오렌지색 헤더 부분)
@@ -42,7 +46,7 @@ class daily_pet extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // 2. 기분 섹션
-                  _buildSectionTitle('🐾 오늘 하루 콩이의 기분!'),
+                  _buildSectionTitle('🐾 오늘 하루 $petName 기분!'),
                   _buildMoodCard(),
                   const SizedBox(height: 24),
 
@@ -58,7 +62,7 @@ class daily_pet extends StatelessWidget {
                   const SizedBox(height: 24),
 
                   // 4. 무슨 일이 있었어? (AI 요약)
-                  _buildSectionTitle('💬 쫑이야 오늘은 어땠어?'),
+                  _buildSectionTitle('💬 $petName야 오늘은 어땠어?'),
                   _buildAISummaryCard(),
                   const SizedBox(height: 24),
 
@@ -164,14 +168,15 @@ class daily_pet extends StatelessWidget {
 
   // --- AI 요약 카드 ---
   Widget _buildAISummaryCard() {
+    final String petName = petData?['pet_name'] ?? '콩이';
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFFF0F5FF),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: const Text(
-        '오늘 콩이는 아침 8시 30분에 맛있게 밥을 먹었어요! 그리고 10시에는 공원에서 신나게 뛰어놀았네요. 오후에는 편안하게 낮잠을 자고...',
+      child: Text(
+        '오늘 $petName는 아침 8시 30분에 맛있게 밥을 먹었어요! 그리고 10시에는 공원에서 신나게 뛰어놀았네요. 오후에는 편안하게 낮잠을 자고...',
         style: TextStyle(color: Colors.blueGrey, fontSize: 13, height: 1.5),
       ),
     );
@@ -179,6 +184,7 @@ class daily_pet extends StatelessWidget {
 
   // --- 펫페오톡 선생님 조언 (보라색) ---
   Widget _buildTeacherAdviceCard() {
+    final String petName = petData?['pet_name'] ?? '콩이';
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -188,11 +194,11 @@ class daily_pet extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
               CircleAvatar(radius: 15, backgroundColor: Colors.white, child: Icon(Icons.person, size: 20)),
               SizedBox(width: 10),
-              Text('쫑이의 하루!', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              Text('$petName의 하루!', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             ],
           ),
           const SizedBox(height: 12),
@@ -202,8 +208,8 @@ class daily_pet extends StatelessWidget {
               color: Colors.white.withOpacity(0.2),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Text(
-              '콩이가 오늘 활발하게 활동했네요! 규칙적인 식사와 충분한 운동, 휴식이 잘 이루어지고 있습니다.',
+            child: Text(
+              '$petName가 오늘 활발하게 활동했네요! 규칙적인 식사와 충분한 운동, 휴식이 잘 이루어지고 있습니다.',
               style: TextStyle(color: Colors.white, fontSize: 12),
             ),
           ),
