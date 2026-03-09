@@ -55,7 +55,7 @@ class OnboardingPage extends StatelessWidget {
 
               // 3. 텍스트 영역
               Text(
-                "첫 번째 페이지.222",
+                "첫 번째 페이지입니다.",
                 style: TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.bold,

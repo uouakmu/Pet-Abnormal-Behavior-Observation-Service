@@ -223,7 +223,6 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
                         );
                       }).toList(),
                     ),
- main
           // ------------------------------------------
 
           SizedBox(height: 12),
@@ -331,7 +330,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
 
           Container(width: 50, height: 50, decoration: BoxDecoration(color: Colors.purple[100], borderRadius: BorderRadius.circular(8)), child: const Icon(Icons.menu_book, color: Colors.purple)),
           const SizedBox(width: 12),
- main
+ 
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -343,7 +342,6 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
                   children: [
                     const Icon(Icons.pets, size: 14, color: Colors.green),
                     const Text(' AI 일기 생성됨', style: TextStyle(fontSize: 10)),
- main
                     if (hasWarning) ...[
                       SizedBox(width: 6),
                       Container(
@@ -359,7 +357,6 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
           ),
 
           const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.grey),
- main
         ],
       ),
     );
