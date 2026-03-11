@@ -30,7 +30,7 @@
   - [반려견, 반려묘 건강정보 데이터](https://aihub.or.kr/aihubdata/data/view.do?pageIndex=1&currMenu=115&topMenu=100&srchOptnCnd=OPTNCND001&searchKeyword=%EB%8F%99%EB%AC%BC&srchDetailCnd=DETAILCND001&srchOrder=ORDER001&srchPagePer=20&aihubDataSe=data&dataSetSn=71520) 
 
 ## Architecture
-- 입력 예정
+<img width="1380" height="752" alt="System Architecture" src="https://github.com/user-attachments/assets/ad3a7bbb-0be5-403f-85a9-708fc5ef3f4c" />
 
 ## AI Model Structure
 <img width="3971" height="2351" alt="model_architecture" src="https://github.com/user-attachments/assets/02f89f08-1805-43c5-a4a2-faf6dae1237d" />
