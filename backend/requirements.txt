@@ -13,8 +13,7 @@ torchvision
 Pillow
 numpy
 
-# Hybrid DB structure
-pymongo
+# Database & Storage
 minio
 opencv-python-headless
 librosa

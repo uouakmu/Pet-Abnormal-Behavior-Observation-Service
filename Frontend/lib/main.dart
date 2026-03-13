@@ -47,7 +47,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
   // 2. Fetch recent diaries
   List<dynamic> recentDiaries = [];
   bool isDiaryLoading = true;
-  final String baseUrl = "http://localhost:8080"; // !IMPORTANT: 안드로이드 실기기 IP 입력 부분 (예: 192.168.0.X:8080)
+  final String baseUrl = "http://localhost:8000"; // !IMPORTANT: 안드로이드 실기기 IP 입력 부분 (예: 192.168.0.X:8000)
 
   @override
   void initState() {
@@ -80,7 +80,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
   }
 
   Future<void> _fetchRecentDiaries() async {
-    final url = Uri.parse('$baseUrl/api/daily-diaries/${widget.userId}?limit=5');
+    final url = Uri.parse('$baseUrl/api/daily-diaries/${widget.userId}?limit=3');
     try {
       final response = await http.get(url);
       if (response.statusCode == 200) {
@@ -167,7 +167,7 @@ class _PetHealthDashboardState extends State<PetHealthDashboard> {
           Row(
             children: [
               _buildActionButton(Icons.book, '일상 일기', '기분 & 활동량', Colors.blue,
-                      () => Navigator.push(context, MaterialPageRoute(builder: (context) => daily_pet(petData: petData)))),
+                      () => Navigator.push(context, MaterialPageRoute(builder: (context) => daily_pet(petData: petData, userId: widget.userId)))),
               SizedBox(width: 8),
               _buildActionButton(Icons.error_outline, '이상 행동', '건강 체크', Colors.orange,
                       () => Navigator.push(context, MaterialPageRoute(builder: (context) => PageB()))),

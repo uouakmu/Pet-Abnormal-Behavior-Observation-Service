@@ -1,27 +1,37 @@
 from datetime import datetime, timedelta
-from FastAPI.main.db import get_db
+from firebase_admin import db as firebase_db
 
 def get_weekly_statistics(user_id: str, pet_type: str) -> dict:
     """
     Fetches and aggregates weekly statistics for a pet, 
     including Emotion Index (Stress vs Happy) and Patella Warning count (dogs only).
     """
-    db_client = get_db()
-    
     end_time = datetime.now()
     start_time = end_time - timedelta(days=7)
     
-    # Base query for the past 7 days
-    query = {
-        "user_id": user_id,
-        "pet_type": pet_type,
-        "timestamp": {
-            "$gte": start_time,
-            "$lte": end_time
-        }
-    }
+    # Fetch logs from Firebase RTDB: users/{user_id}/day/{YYYY-MM-DD}/{push_key}/
+    day_ref = firebase_db.reference(f'users/{user_id}/day')
+    all_days = day_ref.get() or {}
     
-    logs = list(db_client["daily_logs"].find(query).sort("timestamp", 1))
+    logs = []
+    # Iterate over each date, then each push_key log within the date
+    for date_key, logs_on_day in all_days.items():
+        if not isinstance(logs_on_day, dict):
+            continue
+        for push_key, log in logs_on_day.items():
+            if isinstance(log, dict) and log.get("pet_type") == pet_type:
+                log_time_str = log.get("timestamp")
+                if log_time_str:
+                    try:
+                        log_time = datetime.fromisoformat(log_time_str)
+                        if start_time <= log_time <= end_time:
+                            log["timestamp"] = log_time  # replace string with datetime object for later use
+                            logs.append(log)
+                    except ValueError:
+                        pass
+
+    # Sort by timestamp ascending
+    logs.sort(key=lambda x: x["timestamp"])
     
     # Initialize statistics containers
     stats = {

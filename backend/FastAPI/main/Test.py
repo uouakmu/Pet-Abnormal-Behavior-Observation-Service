@@ -10,8 +10,8 @@ import uuid
 
 # AI Inference module import
 from FastAPI.main.model_inference import ai_engine
-# Hybrid DB Imports
-from FastAPI.main.db import get_db, get_minio_client, DAILY_BEHAVIOR_BUCKET
+# Minio DB Imports
+from FastAPI.main.db import get_minio_client, DAILY_BEHAVIOR_BUCKET
 from FastAPI.main.daily_behavior_inference import daily_behavior_engine
 
 # LLM Diary & Statistics Imports
@@ -28,7 +28,6 @@ async def lifespan(app: FastAPI):
     daily_behavior_engine.load_models()
     
     # Initialize DB Connections
-    get_db()
     get_minio_client()
     
     yield
@@ -37,8 +36,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# 1. 파이어베이스 초기화 (다운로드한 키 파일 이름을 입력하세요)
-cred = credentials.Certificate("key/testApi.json")
+# 1. 파이어베이스 초기화
+import os as _os
+_KEY_PATH = _os.path.join(_os.path.dirname(__file__), '..', 'key', 'testApi.json')
+cred = credentials.Certificate(_os.path.abspath(_KEY_PATH))
 firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://test-25cac-default-rtdb.asia-southeast1.firebasedatabase.app/'
 })
@@ -72,37 +73,10 @@ def login(user: User):
             fb_password = user_data # 단순 문자열인 경우
 
         if fb_password == user.password:
-            # MongoDB Sync & Migration
-            db_client = get_db()
-            user_record = db_client["users"].find_one({"user_id": user.user_id})
-            
-            # Firebase에 pet_info가 있는지 확인
-            fb_pet_info = None
+            # Check if pet_info exists in Firebase
+            has_pet_info = False
             if isinstance(user_data, dict):
-                fb_pet_info = user_data.get('pet_info')
-
-            if not user_record:
-                # MongoDB에 없는 계정이면 새로 생성 (Auo-Migration)
-                print(f"Migrating user {user.user_id} to MongoDB...")
-                new_doc = {
-                    "user_id": user.user_id,
-                    "created_at": datetime.datetime.now()
-                }
-                if fb_pet_info:
-                    new_doc["pet_info"] = fb_pet_info
-                
-                db_client["users"].insert_one(new_doc)
-                has_pet_info = bool(fb_pet_info)
-            else:
-                # 이미 있다면 pet_info 존재 여부 확인
-                has_pet_info = "pet_info" in user_record
-                # 만약 MongoDB에는 없는데 Firebase에만 pet_info가 있다면 업데이트
-                if not has_pet_info and fb_pet_info:
-                    db_client["users"].update_one(
-                        {"user_id": user.user_id},
-                        {"$set": {"pet_info": fb_pet_info}}
-                    )
-                    has_pet_info = True
+                has_pet_info = 'pet_info' in user_data
 
             return {
                 "status": "success",
@@ -125,11 +99,9 @@ async def signup(user: User):
     if ref.get() is not None:
         return {"status": "error", "message": "이미 존재하는 아이디입니다."}
 
-    ref.set({"password": user.password})
-    
-    # Create empty user record in MongoDB
-    db_client = get_db()
-    db_client["users"].insert_one({"user_id": user.user_id, "created_at": datetime.datetime.now()})
+    ref.set({
+        "password": user.password
+    })
     
     return {"status": "success"}
 
@@ -160,32 +132,52 @@ class PetInfo(BaseModel):
     
 @app.post("/user-input/{user_id}")
 def save_pet_info(user_id: str, data: PetInfo):
-    # 파이어베이스에도 pet_info 저장
+    # 파이어베이스에 pet_info 저장
     ref = firebase_db.reference(f'users/{user_id}')
     ref.update({"pet_info": data.model_dump()})
-
-    # MongoDB에도 저장
-    db_client = get_db()
-    # Update user document with pet_info in MongoDB
-    result = db_client["users"].update_one(
-        {"user_id": user_id},
-        {"$set": {"pet_info": data.model_dump()}},
-        upsert=True
-    )
     return {"status": "success", "user_id": user_id}
 
 @app.get("/user-pet-info/{user_id}")
 def get_all_pet_info(user_id: str):
-    db_client = get_db()
-    user_data = db_client["users"].find_one({"user_id": user_id})
+    ref = firebase_db.reference(f'users/{user_id}/pet_info')
+    pet_info = ref.get()
 
-    if user_data and "pet_info" in user_data:
+    if pet_info:
         return {
             "status": "success",
-            "data": user_data["pet_info"]  # pet_name, pet_type, pet_gender, pet_birthday
+            "data": pet_info  # pet_name, pet_type, pet_gender, pet_birthday
         }
     else:
         return {"status": "error", "message": "반려동물 정보가 없습니다."}
+
+# ─────────────────────────── 직접 로그 저장 (Flutter → Firebase) ───────────────────────────
+class DirectLogRequest(BaseModel):
+    user_id: str
+    pet_type: str
+    timestamp: str  # ISO 8601
+    analysis_result: dict  # AI 분석 결과 JSON (behavior, audio, patella)
+    video_url: str = ""  # optional
+
+@app.post("/api/save-log")
+def save_log_direct(req: DirectLogRequest):
+    """
+    Saves a pre-computed analysis result to Firebase RTDB under
+    users/{user_id}/day/{YYYY-MM-DD}/{push_key}/.
+    Used by the Flutter app to save test or real analysis data without uploading video.
+    """
+    try:
+        log_time = datetime.datetime.fromisoformat(req.timestamp)
+        date_str = log_time.strftime("%Y-%m-%d")
+        time_str = log_time.strftime("%H:%M:%S")  # 분석 시각 (HH:MM:SS)
+
+        ref = firebase_db.reference(f'users/{req.user_id}/day/{date_str}/{time_str}')
+        ref.set({
+            "image_url": req.video_url,
+            "analysis_result": req.analysis_result
+        })
+        return {"status": "success", "time": time_str, "date": date_str, "user_id": req.user_id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # AI 질환 분석 API
 @app.post("/api/analyze-disease")
@@ -278,16 +270,14 @@ def analyze_daily_behavior(
         else:
             log_time = datetime.datetime.now()
 
-        # 3. Save resulting metadata to MongoDB
-        db_client = get_db()
-        doc = {
-            "user_id": user_id,
-            "pet_type": pet_type,
-            "timestamp": log_time,
-            "video_url": image_url, # Key kept as video_url for frontend compatibility, but it points to an image
+        # 3. Save to Firebase RTDB: users/{user_id}/day/{date}/{time}/ → only timestamp + image_url + analysis_result
+        date_str = log_time.strftime("%Y-%m-%d")
+        time_str = log_time.strftime("%H:%M:%S")  # 분석 시각 (HH:MM:SS)
+        ref = firebase_db.reference(f'users/{user_id}/day/{date_str}/{time_str}')
+        ref.set({
+            "image_url": image_url,
             "analysis_result": ai_result
-        }
-        db_client["daily_logs"].insert_one(doc)
+        })
         
         return {
             "status": "success",
@@ -356,27 +346,50 @@ def fetch_diary_list(user_id: str, limit: int = 0):
 @app.get("/api/gallery/{user_id}")
 def get_video_gallery(user_id: str):
     """
-    Fetches video URLs from daily_logs to display in the Photo Gallery.
+    Fetches video URLs from users/{user_id}/day/* to display in the Photo Gallery.
     """
     try:
-        db_client = get_db()
-        cursor = db_client["daily_logs"].find({"user_id": user_id}).sort("timestamp", -1)
+        day_ref = firebase_db.reference(f'users/{user_id}/day')
+        all_days = day_ref.get() or {}
         
         gallery_items = []
-        for doc in cursor:
-            # Safely get the analysis results
-            beh_info = doc.get("analysis_result", {})
-            if isinstance(beh_info, dict) and beh_info.get("status") == "success":
-                beh_data = beh_info.get("behavior_analysis", {})
-                emotion = beh_data.get("emotion", "Unknown") if isinstance(beh_data, dict) else "Unknown"
-            else:
-                emotion = "Unknown"
+        for date_key, logs_on_day in all_days.items():
+            if not isinstance(logs_on_day, dict):
+                continue
+            for push_key, doc in logs_on_day.items():
+                if isinstance(doc, dict):
+                    # Safely get the analysis results
+                    beh_info = doc.get("analysis_result", {})
+                    if isinstance(beh_info, dict) and beh_info.get("status") == "success":
+                        beh_data = beh_info.get("behavior_analysis", {})
+                        emotion = beh_data.get("emotion", "Unknown") if isinstance(beh_data, dict) else "Unknown"
+                    else:
+                        emotion = "Unknown"
+                        
+                    timestamp_str = doc.get("timestamp", "")
+                    
+                    # Format timestamp for display
+                    display_time = "Unknown"
+                    if timestamp_str:
+                        try:
+                            dt = datetime.datetime.fromisoformat(timestamp_str)
+                            display_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            display_time = timestamp_str
+
+                    gallery_items.append({
+                        "timestamp": display_time,
+                        "video_url": doc.get("video_url", "").replace("minio:9000", "localhost:9000"),
+                        "emotion": emotion,
+                        "_raw_time": timestamp_str
+                    })
                 
-            gallery_items.append({
-                "timestamp": doc["timestamp"].strftime("%Y-%m-%d %H:%M:%S"),
-                "video_url": doc.get("video_url", "").replace("minio:9000", "localhost:9000"),
-                "emotion": emotion
-            })
+        # Sort by timestamp descending
+        gallery_items.sort(key=lambda x: x.get("_raw_time", ""), reverse=True)
+        
+        # Remove sorting key
+        for item in gallery_items:
+            item.pop("_raw_time", None)
             
         return {
             "status": "success",
