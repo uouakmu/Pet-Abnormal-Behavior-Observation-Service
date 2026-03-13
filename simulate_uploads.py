@@ -5,10 +5,10 @@ import time
 import datetime
 
 # --- CONFIGURATION ---
-VIDEO_PATH = "sample1.mp4" 
+VIDEO_PATH = "sample2.mp4" 
 API_BASE = "http://localhost:8080"
 API_UPLOAD = f"{API_BASE}/api/daily-behavior"
-USER_ID = "dog"  
+USER_ID = "admin"  
 PASSWORD = "1234"
 PET_TYPE = "dog"   
 NUM_CHUNKS = 24    # Number of simulation uploads (4 days * 6 chunks per day)
@@ -73,7 +73,7 @@ def prepare_clips():
     return clip_names
 
 def simulate_historical_uploads():
-    register_user()
+    #register_user()
     clips = prepare_clips()
     if not clips:
         return
