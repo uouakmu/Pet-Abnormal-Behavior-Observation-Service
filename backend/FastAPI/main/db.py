@@ -1,32 +1,6 @@
 import os
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure
 from minio import Minio
 from minio.error import S3Error
-
-# --- MongoDB Configuration ---
-# Use environment variable or fallback to localhost for direct running
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017/")
-mongo_client = None
-db = None
-
-def init_mongodb():
-    global mongo_client, db
-    try:
-        mongo_client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
-        # Check connection
-        mongo_client.admin.command('ping')
-        print("Connected to MongoDB successfully.")
-        
-        # Select database
-        db = mongo_client["pet_observation_db"]
-    except ConnectionFailure as e:
-        print(f"Could not connect to MongoDB: {e}")
-
-def get_db():
-    if db is None:
-        init_mongodb()
-    return db
 
 # --- MinIO Configuration ---
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")

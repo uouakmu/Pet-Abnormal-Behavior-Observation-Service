@@ -2,7 +2,15 @@ import os
 import json
 from datetime import datetime, timedelta
 from groq import Groq
-from FastAPI.main.db import get_db
+from firebase_admin import db as firebase_db
+
+# Load .env from backend directory
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
+    load_dotenv(os.path.abspath(_env_path))
+except ImportError:
+    pass  # dotenv not installed; rely on system env vars
 
 # Initialize Groq client
 # This assumes GROQ_API_KEY is properly set in the environment (.env)
@@ -14,58 +22,60 @@ except Exception as e:
 
 def get_daily_logs_for_diary(user_id: str, target_date: str = None) -> list:
     """
-    Fetch daily video logs for a user on a specific date.
+    Fetch daily analysis logs for a user on a specific date.
+    New structure: users/{user_id}/day/{YYYY-MM-DD}/{HH:MM:SS}/
+      └── image_url, analysis_result
     target_date format: YYYY-MM-DD
     """
-    db_client = get_db()
-    
     if target_date is None:
         target_date = datetime.now().strftime("%Y-%m-%d")
-        
-    start_time = datetime.strptime(target_date, "%Y-%m-%d")
-    end_time = start_time + timedelta(days=1)
-    
-    # Query MongoDB for logs belonging to the user within the target date
-    query = {
-        "user_id": user_id,
-        "timestamp": {
-            "$gte": start_time,
-            "$lt": end_time
-        }
-    }
-    
-    logs = list(db_client["daily_logs"].find(query).sort("timestamp", 1))
+
+    ref = firebase_db.reference(f'users/{user_id}/day/{target_date}')
+    logs_on_day = ref.get() or {}
+
+    logs = []
+    for time_key, log in logs_on_day.items():
+        if not isinstance(log, dict):
+            continue
+        # Attach the time key so we can sort; analysis_result must exist
+        if "analysis_result" in log:
+            log["_time_key"] = time_key  # HH:MM:SS
+            logs.append(log)
+
+    # Sort by HH:MM:SS string (lexicographic == chronological)
+    logs.sort(key=lambda x: x.get("_time_key", ""))
     return logs
 
 def generate_daily_diary(user_id: str, target_date: str = None) -> str:
     """
-    Generates a daily diary using the Groq API based on MongoDB logs.
+    Generates a daily diary using the Groq API based on Firebase RTDB logs.
     """
     if groq_client is None:
         return "Groq API 클라이언트가 초기화되지 않았습니다. API 키를 확인해주세요."
         
     logs = get_daily_logs_for_diary(user_id, target_date)
-    
+
     if not logs:
         return f"{target_date if target_date else '오늘'}의 기록이 충분하지 않아 일기를 작성하기 어렵습니다."
-    
-    # Extract prompt data from logs
-    pet_type = logs[0].get("pet_type", "반려동물")
-    
-    # ---------------------------------------------------------
-    # RATE LIMIT FIX: If there are too many logs (e.g., 100 chunks),
-    # sample at most 15 logs to prevent Groq Token limit errors.
+
+    # pet_type is no longer in the log; fetch from Firebase pet_info
+    try:
+        pet_info = firebase_db.reference(f'users/{user_id}/pet_info').get() or {}
+        pet_type = pet_info.get("pet_type", "반려동물")
+    except Exception:
+        pet_type = "반려동물"
+
+    # Sample at most 30 logs to prevent Groq token limit errors (increased from 15 to accommodate 24 points)
     import random
-    if len(logs) > 15:
-        sampled_logs = random.sample(logs, 15)
-        sampled_logs.sort(key=lambda x: x.get("timestamp", datetime.now()))
+    if len(logs) > 30:
+        sampled_logs = random.sample(logs, 30)
+        sampled_logs.sort(key=lambda x: x.get("_time_key", ""))
     else:
         sampled_logs = logs
-    # ---------------------------------------------------------
     
     activities_summary = []
     for log in sampled_logs:
-        time_str = log["timestamp"].strftime("%H:%M")
+        time_str = log.get("_time_key", "??:??:??")[:5]  # HH:MM from HH:MM:SS
         behavior_info = log.get("analysis_result", {})
         
         # Parse nested AI inference structure 
@@ -121,19 +131,9 @@ def generate_daily_diary(user_id: str, target_date: str = None) -> str:
         )
         diary_content = response.choices[0].message.content
         
-        # Save or update the generated diary to MongoDB
-        db_client = get_db()
-        db_client["daily_diaries"].update_one(
-            {"user_id": user_id, "date": target_date},
-            {"$set": {
-                "user_id": user_id,
-                "date": target_date,
-                "pet_type": pet_type,
-                "content": diary_content,
-                "created_at": datetime.now()
-            }},
-            upsert=True
-        )
+        # Save ONLY the diary content string to Firebase RTDB under users/{user_id}/LLM_diary/{date}
+        diary_ref = firebase_db.reference(f'users/{user_id}/LLM_diary/{target_date}')
+        diary_ref.set(diary_content)
         
         return diary_content
         
@@ -142,38 +142,44 @@ def generate_daily_diary(user_id: str, target_date: str = None) -> str:
 
 def get_diary_list(user_id: str, limit: int = 0) -> list:
     """
-    Fetches the saved diaries for a user.
+    Fetches the saved diaries for a user from users/{user_id}/LLM_diary/{date}.
+    Each diary is stored as a plain string.
     If limit > 0, returns only that many recent diaries.
     """
-    db_client = get_db()
-    cursor = db_client["daily_diaries"].find({"user_id": user_id}).sort("date", -1)
-    if limit > 0:
-        cursor = cursor.limit(limit)
-        
+    llm_ref = firebase_db.reference(f'users/{user_id}/LLM_diary')
+    all_diaries = llm_ref.get() or {}
+
+    # Also pre-fetch day logs to find image URLs
+    day_ref = firebase_db.reference(f'users/{user_id}/day')
+    all_days = day_ref.get() or {}
+
     diaries = []
-    for doc in cursor:
-        target_date = doc.get("date")
-        video_url = ""
-        
-        if target_date:
-            try:
-                start_time = datetime.strptime(target_date, "%Y-%m-%d")
-                end_time = start_time + timedelta(days=1)
-                
-                log_with_video = db_client["daily_logs"].find_one({
-                    "user_id": user_id,
-                    "timestamp": {"$gte": start_time, "$lt": end_time},
-                    "video_url": {"$ne": ""}
-                })
-                if log_with_video and "video_url" in log_with_video:
-                    video_url = log_with_video["video_url"].replace("minio:9000", "localhost:9000")
-            except Exception:
-                pass
+    for date_key, diary_value in all_diaries.items():
+        # diary_value may be a plain string (new) or a dict (legacy)
+        if isinstance(diary_value, str):
+            content = diary_value
+        elif isinstance(diary_value, dict):
+            content = diary_value.get("content", "")
+        else:
+            continue
+
+        # Try to find an image_url from day logs on this date
+        image_url = ""
+        day_logs = all_days.get(date_key, {})
+        if isinstance(day_logs, dict):
+            for time_key, log in day_logs.items():
+                if isinstance(log, dict) and log.get("image_url"):
+                    image_url = log["image_url"].replace("minio:9000", "localhost:9000")
+                    break
 
         diaries.append({
-            "date": target_date or "Unknown Date",
-            "content": doc.get("content", ""),
-            "pet_type": doc.get("pet_type", "Unknown"),
-            "video_url": video_url
+            "date": date_key,
+            "content": content,
+            "image_url": image_url,
         })
+
+    diaries.sort(key=lambda x: x.get("date", ""), reverse=True)
+
+    if limit > 0:
+        return diaries[:limit]
     return diaries

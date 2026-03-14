@@ -3,16 +3,29 @@ import cv2
 import requests
 import time
 import datetime
+import argparse
 
-# --- CONFIGURATION ---
-VIDEO_PATH = "sample2.mp4" 
+# --- CONFIGURATION (DEFAULTS) ---
+VIDEO_PATH = "sample1.mp4" 
 API_BASE = "http://localhost:8080"
 API_UPLOAD = f"{API_BASE}/api/daily-behavior"
-USER_ID = "admin"  
-PASSWORD = "1234"
-PET_TYPE = "dog"   
-NUM_CHUNKS = 24    # Number of simulation uploads (4 days * 6 chunks per day)
 # ---------------------
+
+def get_args():
+    parser = argparse.ArgumentParser(description="Simulate pet analysis uploads.")
+    parser.add_argument("--user", type=str, default="admin", help="User ID")
+    parser.add_argument("--password", type=str, default="1234", help="Password")
+    parser.add_argument("--pet", type=str, default="dog", help="Pet type (dog/cat)")
+    parser.add_argument("--video", type=str, default=VIDEO_PATH, help="Path to sample video")
+    return parser.parse_args()
+
+args = get_args()
+USER_ID = args.user
+PASSWORD = args.password
+PET_TYPE = args.pet
+VIDEO_PATH = args.video
+NUM_CHUNKS = 24
+
 
 def register_user():
     print(f"Ensuring user {USER_ID} exists...")
@@ -24,77 +37,61 @@ def register_user():
     except Exception as e:
         print(f"Warning on user creation: {e}")
 
-def prepare_clips():
-    """Extracts 24 unique 15-second clips evenly distributed across the video."""
-    print(f"Opening video: {VIDEO_PATH} to extract {NUM_CHUNKS} unique 15s clips...")
+def prepare_images():
+    """Extracts 24 unique frames evenly distributed across the video."""
+    print(f"Opening video: {VIDEO_PATH} to extract {NUM_CHUNKS} unique frames...")
     cap = cv2.VideoCapture(VIDEO_PATH)
     if not cap.isOpened():
         print(f"Error: Could not open {VIDEO_PATH}")
         return []
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration = total_frames / fps
-    print(f"Source video duration: {duration:.2f} seconds")
+    print(f"Source video frames: {total_frames}")
 
-    # Calculate stride so 24 clips fit exactly within (duration - 15) seconds
-    stride = max(1, (duration - 15) / max(1, NUM_CHUNKS - 1))
+    # Calculate stride to get 24 frames
+    stride = max(1, total_frames // NUM_CHUNKS)
     
-    clip_names = []
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
+    image_names = []
     for i in range(NUM_CHUNKS):
-        clip_name = f"chunk_sim_{i:03d}.mp4"
-        clip_names.append(clip_name)
+        image_name = f"frame_sim_{i:03d}.jpg"
+        image_names.append(image_name)
         
-        if os.path.exists(clip_name):
+        if os.path.exists(image_name):
             continue
             
-        start_time = i * stride
-        start_frame = int(start_time * fps)
-        
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        out = cv2.VideoWriter(clip_name, fourcc, fps, (width, height))
-        
-        frames_to_read = int(fps * 15)
-        print(f"Extracting {clip_name} (from {start_time:.1f}s)...")
-        for _ in range(frames_to_read):
-            ret, frame = cap.read()
-            if not ret:
-                break
-            out.write(frame)
+        frame_idx = i * stride
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        if not ret:
+            break
             
-        out.release()
-        
+        print(f"Extracting {image_name} (frame {frame_idx})...")
+        cv2.imwrite(image_name, frame)
+            
     cap.release()
-    print("Clip extraction complete.")
-    return clip_names
+    print("Frame extraction complete.")
+    return image_names
 
 def simulate_historical_uploads():
     #register_user()
-    clips = prepare_clips()
-    if not clips:
+    images = prepare_images()
+    if not images:
         return
         
-    print(f"\nStarting {NUM_CHUNKS} distinct chunk uploads for 4 days...")
+    print(f"\nStarting {NUM_CHUNKS} distinct image uploads for today...")
 
-    # For 24 chunks spanning 4 days: 6 chunks per day
-    for chunk_idx, clip_name in enumerate(clips):
-        # Calculate historical time (4 days back to today)
-        days_ago = 3 - (chunk_idx // 6)
-        chunk_time = datetime.datetime.now() - datetime.timedelta(days=days_ago)
-        
-        # Space them 2 hours apart starting from 10:00 AM
-        hour_offset = 10 + (chunk_idx % 6) * 2
-        chunk_time = chunk_time.replace(hour=hour_offset if hour_offset < 24 else 23, minute=0, second=0, microsecond=0)
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    
+    for chunk_idx, image_name in enumerate(images):
+        # Space them 1 hour apart for TODAY
+        chunk_time = datetime.datetime.now().replace(hour=chunk_idx % 24, minute=0, second=0, microsecond=0)
 
-        print(f"[{chunk_idx+1}/{NUM_CHUNKS}] Uploading {clip_name} for timestamp: {chunk_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"[{chunk_idx+1}/{NUM_CHUNKS}] Uploading {image_name} for timestamp: {chunk_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         try:
-            with open(clip_name, 'rb') as f:
-                files = {'file': (clip_name, f, 'video/mp4')}
+            with open(image_name, 'rb') as f:
+                # Backend now handles images in /api/daily-behavior
+                files = {'file': (image_name, f, 'image/jpeg')}
                 data = {
                     'user_id': USER_ID,
                     'pet_type': PET_TYPE,
@@ -116,11 +113,28 @@ def simulate_historical_uploads():
                     print(response.text)
                     
         except Exception as e:
-            print(f"Error uploading chunk {chunk_idx}: {e}")
+            print(f"Error uploading image {chunk_idx}: {e}")
             
-        time.sleep(1) # delay to not overwhelm server
+        time.sleep(0.5) # small delay
         
-    print("\n✅ Simulation complete! You can now check the Flutter app photo gallery.")
+    print("\n--- Triggering LLM Diary Generation ---")
+    try:
+        diary_url = f"{API_BASE}/api/daily-diary/{USER_ID}?date={today}"
+        print(f"Calling: {diary_url}")
+        response = requests.get(diary_url)
+        if response.status_code == 200:
+            diary_data = response.json()
+            if diary_data.get("status") == "success":
+                print("\n--- Generated Diary ---\n")
+                print(diary_data.get("diary"))
+            else:
+                print(f"Diary Error: {diary_data.get('message')}")
+        else:
+            print(f"Diary API Failed: HTTP {response.status_code}")
+    except Exception as e:
+        print(f"Error triggering diary: {e}")
+
+    print("\nSimulation complete! You can now check the Flutter app.")
 
 if __name__ == "__main__":
     simulate_historical_uploads()

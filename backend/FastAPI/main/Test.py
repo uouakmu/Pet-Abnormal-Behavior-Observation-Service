@@ -10,8 +10,8 @@ import uuid
 
 # AI Inference module import
 from FastAPI.main.model_inference import ai_engine
-# Hybrid DB Imports
-from FastAPI.main.db import get_db, get_minio_client, DAILY_BEHAVIOR_BUCKET
+# Minio DB Imports
+from FastAPI.main.db import get_minio_client, DAILY_BEHAVIOR_BUCKET
 from FastAPI.main.daily_behavior_inference import daily_behavior_engine
 
 # LLM Diary & Statistics Imports
@@ -28,7 +28,6 @@ async def lifespan(app: FastAPI):
     daily_behavior_engine.load_models()
     
     # Initialize DB Connections
-    get_db()
     get_minio_client()
     
     yield
@@ -37,8 +36,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# 1. 파이어베이스 초기화 (다운로드한 키 파일 이름을 입력하세요)
-cred = credentials.Certificate("key/testApi.json")
+# 1. 파이어베이스 초기화
+import os as _os
+_KEY_PATH = _os.path.join(_os.path.dirname(__file__), '..', 'key', 'testApi.json')
+cred = credentials.Certificate(_os.path.abspath(_KEY_PATH))
 firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://test-25cac-default-rtdb.asia-southeast1.firebasedatabase.app/'
 })
@@ -72,37 +73,10 @@ def login(user: User):
             fb_password = user_data # 단순 문자열인 경우
 
         if fb_password == user.password:
-            # MongoDB Sync & Migration
-            db_client = get_db()
-            user_record = db_client["users"].find_one({"user_id": user.user_id})
-            
-            # Firebase에 pet_info가 있는지 확인
-            fb_pet_info = None
+            # Check if pet_info exists in Firebase
+            has_pet_info = False
             if isinstance(user_data, dict):
-                fb_pet_info = user_data.get('pet_info')
-
-            if not user_record:
-                # MongoDB에 없는 계정이면 새로 생성 (Auo-Migration)
-                print(f"Migrating user {user.user_id} to MongoDB...")
-                new_doc = {
-                    "user_id": user.user_id,
-                    "created_at": datetime.datetime.now()
-                }
-                if fb_pet_info:
-                    new_doc["pet_info"] = fb_pet_info
-                
-                db_client["users"].insert_one(new_doc)
-                has_pet_info = bool(fb_pet_info)
-            else:
-                # 이미 있다면 pet_info 존재 여부 확인
-                has_pet_info = "pet_info" in user_record
-                # 만약 MongoDB에는 없는데 Firebase에만 pet_info가 있다면 업데이트
-                if not has_pet_info and fb_pet_info:
-                    db_client["users"].update_one(
-                        {"user_id": user.user_id},
-                        {"$set": {"pet_info": fb_pet_info}}
-                    )
-                    has_pet_info = True
+                has_pet_info = 'pet_info' in user_data
 
             return {
                 "status": "success",
@@ -125,11 +99,9 @@ async def signup(user: User):
     if ref.get() is not None:
         return {"status": "error", "message": "이미 존재하는 아이디입니다."}
 
-    ref.set({"password": user.password})
-    
-    # Create empty user record in MongoDB
-    db_client = get_db()
-    db_client["users"].insert_one({"user_id": user.user_id, "created_at": datetime.datetime.now()})
+    ref.set({
+        "password": user.password
+    })
     
     return {"status": "success"}
 
@@ -160,32 +132,52 @@ class PetInfo(BaseModel):
     
 @app.post("/user-input/{user_id}")
 def save_pet_info(user_id: str, data: PetInfo):
-    # 파이어베이스에도 pet_info 저장
+    # 파이어베이스에 pet_info 저장
     ref = firebase_db.reference(f'users/{user_id}')
     ref.update({"pet_info": data.model_dump()})
-
-    # MongoDB에도 저장
-    db_client = get_db()
-    # Update user document with pet_info in MongoDB
-    result = db_client["users"].update_one(
-        {"user_id": user_id},
-        {"$set": {"pet_info": data.model_dump()}},
-        upsert=True
-    )
     return {"status": "success", "user_id": user_id}
 
 @app.get("/user-pet-info/{user_id}")
 def get_all_pet_info(user_id: str):
-    db_client = get_db()
-    user_data = db_client["users"].find_one({"user_id": user_id})
+    ref = firebase_db.reference(f'users/{user_id}/pet_info')
+    pet_info = ref.get()
 
-    if user_data and "pet_info" in user_data:
+    if pet_info:
         return {
             "status": "success",
-            "data": user_data["pet_info"]  # pet_name, pet_type, pet_gender, pet_birthday
+            "data": pet_info  # pet_name, pet_type, pet_gender, pet_birthday
         }
     else:
         return {"status": "error", "message": "반려동물 정보가 없습니다."}
+
+# ─────────────────────────── 직접 로그 저장 (Flutter → Firebase) ───────────────────────────
+class DirectLogRequest(BaseModel):
+    user_id: str
+    pet_type: str
+    timestamp: str  # ISO 8601
+    analysis_result: dict  # AI 분석 결과 JSON (behavior, audio, patella)
+    video_url: str = ""  # optional
+
+@app.post("/api/save-log")
+def save_log_direct(req: DirectLogRequest):
+    """
+    Saves a pre-computed analysis result to Firebase RTDB under
+    users/{user_id}/day/{YYYY-MM-DD}/{push_key}/.
+    Used by the Flutter app to save test or real analysis data without uploading video.
+    """
+    try:
+        log_time = datetime.datetime.fromisoformat(req.timestamp)
+        date_str = log_time.strftime("%Y-%m-%d")
+        time_str = log_time.strftime("%H:%M:%S")  # 분석 시각 (HH:MM:SS)
+
+        ref = firebase_db.reference(f'users/{req.user_id}/day/{date_str}/{time_str}')
+        ref.set({
+            "image_url": req.video_url,
+            "analysis_result": req.analysis_result
+        })
+        return {"status": "success", "time": time_str, "date": date_str, "user_id": req.user_id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # AI 질환 분석 API
 @app.post("/api/analyze-disease")
@@ -223,50 +215,52 @@ def analyze_daily_behavior(
     import traceback
     try:
         contents = file.file.read()
-        print(f"Received video: len={len(contents)} timestamp={timestamp}", flush=True)
+        filename = file.filename.lower()
+        is_image = filename.endswith(('.jpg', '.jpeg', '.png'))
         
-        # 1. Daily Behavior & Sound Inference (Analyze full clip)
-        print("Starting AI inference...", flush=True)
-        ai_result = daily_behavior_engine.analyze_clip(contents, pet_type)
-        print("Completed AI inference.", flush=True)
+        print(f"Received file: {filename}, len={len(contents)} timestamp={timestamp}", flush=True)
+        
+        if is_image:
+            # 1. Image Inference
+            print("Starting image AI inference...", flush=True)
+            ai_result = daily_behavior_engine.analyze_image(contents, pet_type)
+            image_bytes = contents
+            print("Completed image AI inference.", flush=True)
+        else:
+            # 1. Video Clip Inference
+            print("Starting video AI inference...", flush=True)
+            ai_result = daily_behavior_engine.analyze_clip(contents, pet_type)
+            print("Completed video AI inference.", flush=True)
 
-        # 2. Extract ONLY ONE frame to upload to MinIO to save storage costs
-        print("Extracting frame...", flush=True)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4", mode="wb") as tmp_file:
-            tmp_file.write(contents)
-            temp_video_path = tmp_file.name
+            # 2. Extract ONLY ONE frame for video
+            print("Extracting frame from video...", flush=True)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4", mode="wb") as tmp_file:
+                tmp_file.write(contents)
+                temp_video_path = tmp_file.name
 
-        cap = cv2.VideoCapture(temp_video_path)
-        ret, frame = cap.read()
-        cap.release()
-        os.remove(temp_video_path)
-        print(f"Extracted frame successfully. Ret: {ret}", flush=True)
+            cap = cv2.VideoCapture(temp_video_path)
+            ret, frame = cap.read()
+            cap.release()
+            os.remove(temp_video_path)
+            
+            if ret:
+                _, buffer = cv2.imencode('.jpg', frame)
+                image_bytes = buffer.tobytes()
+            else:
+                image_bytes = b""
 
+        # 3. Upload image to MinIO
         minio_client = get_minio_client()
         object_name = f"{user_id}/{uuid.uuid4()}.jpg"
         
-        if ret:
-             # Encode image
-             _, buffer = cv2.imencode('.jpg', frame)
-             image_bytes = buffer.tobytes()
-             minio_client.put_object(
-                 DAILY_BEHAVIOR_BUCKET,
-                 object_name,
-                 io.BytesIO(image_bytes),
-                 length=len(image_bytes),
-                 content_type="image/jpeg"
-             )
-        else:
-             # Fallback if frame read fails (e.g. empty video)
-             minio_client.put_object(
-                 DAILY_BEHAVIOR_BUCKET,
-                 object_name,
-                 io.BytesIO(b""),
-                 length=0,
-                 content_type="image/jpeg"
-             )
+        minio_client.put_object(
+            DAILY_BEHAVIOR_BUCKET,
+            object_name,
+            io.BytesIO(image_bytes),
+            length=len(image_bytes),
+            content_type="image/jpeg"
+        )
         
-        # We store the image URL instead of video URL
         image_url = f"http://localhost:9000/{DAILY_BEHAVIOR_BUCKET}/{object_name}"
         
         # Determine timestamp
@@ -278,26 +272,132 @@ def analyze_daily_behavior(
         else:
             log_time = datetime.datetime.now()
 
-        # 3. Save resulting metadata to MongoDB
-        db_client = get_db()
-        doc = {
-            "user_id": user_id,
-            "pet_type": pet_type,
-            "timestamp": log_time,
-            "video_url": image_url, # Key kept as video_url for frontend compatibility, but it points to an image
+        # 4. Save to Firebase RTDB
+        date_str = log_time.strftime("%Y-%m-%d")
+        time_str = log_time.strftime("%H:%M:%S")
+        ref = firebase_db.reference(f'users/{user_id}/day/{date_str}/{time_str}')
+        ref.set({
+            "image_url": image_url,
             "analysis_result": ai_result
-        }
-        db_client["daily_logs"].insert_one(doc)
+        })
         
         return {
             "status": "success",
-            "message": "Routine behavior analyzed and ONE frame saved successfully",
+            "message": "Daily analysis saved successfully",
             "video_url": image_url,
             "ai_inference": ai_result
         }
         
     except Exception as e:
         return {"status": "error", "message": f"Daily behavior processing error: {str(e)}"}
+
+@app.post("/api/simulate-full-day")
+async def simulate_full_day(
+    user_id: str = Form(...),
+    pet_type: str = Form(...)
+):
+    """
+    SIMULATION ONLY: Extracts 24 frames from sample1.mp4, analyzes them,
+    saves to DB, and returns a generated LLM diary.
+    """
+    import os
+    import cv2
+    import uuid
+    import tempfile
+    import datetime
+    import io
+    
+    # Use a unique local name to avoid shadowing global VIDEO_PATH
+    SIM_SAMPLE_FILE = "sample1.mp4" 
+    sim_possible_paths = [
+        SIM_SAMPLE_FILE,
+        os.path.join(os.path.dirname(__file__), SIM_SAMPLE_FILE),
+        os.path.join(os.path.dirname(__file__), "..", "..", SIM_SAMPLE_FILE),
+        "/app/sample1.mp4"
+    ]
+    
+    sim_found_path = None
+    for p in sim_possible_paths:
+        if os.path.exists(p):
+            sim_found_path = p
+            break
+            
+    if not sim_found_path:
+        return {"status": "error", "message": f"Sample video not found. Tried: {sim_possible_paths}"}
+    
+    target_video = sim_found_path
+
+    try:
+        print(f"Starting simulation for user {user_id} using {target_video}")
+        sim_cap = cv2.VideoCapture(target_video)
+        if not sim_cap.isOpened():
+            print(f"Error: Could not open {target_video}")
+            return {"status": "error", "message": "Could not open sample video"}
+
+        sim_total_frames = int(sim_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        print(f"Total frames in video: {sim_total_frames}")
+        NUM_SIM_CHUNKS = 24
+        sim_stride = max(1, sim_total_frames // NUM_SIM_CHUNKS)
+        
+        sim_today = datetime.datetime.now().strftime("%Y-%m-%d")
+        minio_client = get_minio_client()
+
+        for i in range(NUM_SIM_CHUNKS):
+            f_idx = i * sim_stride
+            sim_cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
+            success, sim_frame = sim_cap.read()
+            if not success: 
+                print(f"Warning: Could not read frame at index {f_idx}")
+                continue
+            
+            # Encode frame
+            _, sim_buffer = cv2.imencode('.jpg', sim_frame)
+            sim_image_bytes = sim_buffer.tobytes()
+            
+            # 1. AI Analysis
+            print(f"Analyzing frame {i+1}/24 (pet_type={pet_type})...")
+            sim_ai_result = daily_behavior_engine.analyze_image(sim_image_bytes, pet_type)
+            
+            # 2. MinIO Upload
+            object_name = f"{user_id}/sim_{uuid.uuid4()}.jpg"
+            minio_client.put_object(
+                DAILY_BEHAVIOR_BUCKET,
+                object_name,
+                io.BytesIO(sim_image_bytes),
+                length=len(sim_image_bytes),
+                content_type="image/jpeg"
+            )
+            image_url = f"http://localhost:9000/{DAILY_BEHAVIOR_BUCKET}/{object_name}"
+            
+            # 3. Firebase Save
+            chunk_time = datetime.datetime.now().replace(hour=i % 24, minute=0, second=0, microsecond=0)
+            time_str = chunk_time.strftime("%H:%M:%S")
+            full_timestamp = chunk_time.isoformat()
+            
+            ref = firebase_db.reference(f'users/{user_id}/day/{sim_today}/{time_str}')
+            ref.set({
+                "video_url": image_url, # Gallery currently looks for video_url
+                "image_url": image_url,
+                "timestamp": full_timestamp,
+                "analysis_result": sim_ai_result
+            })
+            
+        sim_cap.release()
+        print(f"Simulation loop successfully finished for {user_id}")
+        
+        # 4. Generate Diary
+        diary_content = generate_daily_diary(user_id, sim_today)
+        
+        return {
+            "status": "success",
+            "message": "Full day simulation completed and diary generated",
+            "diary": diary_content
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": f"Simulation failed: {str(e)}"}
 
 # ─────────────────────────── PHASE 3: AI DIARY & STATISTICS ───────────────────────────
 
@@ -309,7 +409,7 @@ async def get_daily_diary(user_id: str, date: str = None):
     """
     try:
         diary_content = generate_daily_diary(user_id, date)
-        if "오류" in diary_content or "어렵습니다" in diary_content:
+        if any(keyword in diary_content for keyword in ["오류", "어렵습니다", "초기화되지 않았습니다", "실패"]):
             return {"status": "error", "message": diary_content}
         
         return {
@@ -356,27 +456,54 @@ def fetch_diary_list(user_id: str, limit: int = 0):
 @app.get("/api/gallery/{user_id}")
 def get_video_gallery(user_id: str):
     """
-    Fetches video URLs from daily_logs to display in the Photo Gallery.
+    Fetches video URLs from users/{user_id}/day/* to display in the Photo Gallery.
     """
     try:
-        db_client = get_db()
-        cursor = db_client["daily_logs"].find({"user_id": user_id}).sort("timestamp", -1)
+        day_ref = firebase_db.reference(f'users/{user_id}/day')
+        all_days = day_ref.get() or {}
         
         gallery_items = []
-        for doc in cursor:
-            # Safely get the analysis results
-            beh_info = doc.get("analysis_result", {})
-            if isinstance(beh_info, dict) and beh_info.get("status") == "success":
-                beh_data = beh_info.get("behavior_analysis", {})
-                emotion = beh_data.get("emotion", "Unknown") if isinstance(beh_data, dict) else "Unknown"
-            else:
-                emotion = "Unknown"
+        for date_key, logs_on_day in all_days.items():
+            if not isinstance(logs_on_day, dict):
+                continue
+            for push_key, doc in logs_on_day.items():
+                if isinstance(doc, dict):
+                    # Safely get the analysis results
+                    beh_info = doc.get("analysis_result", {})
+                    if isinstance(beh_info, dict) and beh_info.get("status") == "success":
+                        beh_data = beh_info.get("behavior_analysis", {})
+                        emotion = beh_data.get("emotion", "Unknown") if isinstance(beh_data, dict) else "Unknown"
+                    else:
+                        emotion = "Unknown"
+                        
+                    timestamp_str = doc.get("timestamp", "")
+                    
+                    # Format timestamp for display
+                    display_time = "Unknown"
+                    if timestamp_str:
+                        try:
+                            dt = datetime.datetime.fromisoformat(timestamp_str)
+                            display_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            display_time = timestamp_str
+
+                    url = doc.get("video_url") or doc.get("image_url", "")
+                    url = url.replace("minio:9000", "localhost:9000")
+                    
+                    gallery_items.append({
+                        "timestamp": display_time,
+                        "video_url": url,
+                        "emotion": emotion,
+                        "is_image": "video_url" not in doc,
+                        "_raw_time": timestamp_str
+                    })
                 
-            gallery_items.append({
-                "timestamp": doc["timestamp"].strftime("%Y-%m-%d %H:%M:%S"),
-                "video_url": doc.get("video_url", "").replace("minio:9000", "localhost:9000"),
-                "emotion": emotion
-            })
+        # Sort by timestamp descending
+        gallery_items.sort(key=lambda x: x.get("_raw_time", ""), reverse=True)
+        
+        # Remove sorting key
+        for item in gallery_items:
+            item.pop("_raw_time", None)
             
         return {
             "status": "success",

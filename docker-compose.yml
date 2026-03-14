@@ -11,8 +11,8 @@ services:
       - ./backend:/app
       - ./backend/FastAPI/key:/app/key:ro
       - ./AI Model/AI_pth:/app/AI_pth:ro
-    # env_file:
-    #   - .env
+    env_file:
+      - ./backend/.env
     environment:
       - PYTHONUNBUFFERED=1
       - MONGO_URL=mongodb://mongodb:27017/

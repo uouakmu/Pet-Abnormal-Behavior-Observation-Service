@@ -241,6 +241,46 @@ class DailyBehaviorEngine:
                 max_prob, max_idx = torch.max(mean_probs, dim=0)
                 return classes[max_idx.item()], round(max_prob.item(), 3)
 
+    def analyze_image(self, image_bytes: bytes, pet_type: str) -> dict:
+        if not self.is_loaded:
+            return {"status": "error", "message": "Behavior models are not loaded yet."}
+
+        is_dog = (pet_type.lower() == "dog")
+        
+        try:
+            img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            tensor = TRANSFORM_TEST(img).unsqueeze(0).to(self.device)
+
+            if is_dog:
+                beh, b_conf = self._infer_image_model(self.dog_behavior_model, tensor, self.dog_behavior_classes)
+                emo, e_conf = self._infer_image_model(self.dog_emotion_model, tensor, self.dog_emotion_classes)
+                snd, s_conf = "Unknown", 0.0 # No audio in image
+                pat, p_conf = self._infer_patella_model(self.dog_patella_model, tensor, self.dog_patella_classes)
+                
+                return {
+                    "status": "success",
+                    "pet_type_analyzed": "dog",
+                    "behavior_analysis": {"detected_behavior": beh, "confidence": b_conf, "emotion": emo, "emotion_confidence": e_conf},
+                    "audio_analysis": {"detected_sound": snd, "confidence": s_conf},
+                    "patella_analysis": {"status": pat, "confidence": p_conf},
+                    "summary": f"{beh} (Image Analysis)"
+                }
+            else:
+                beh, b_conf = self._infer_image_model(self.cat_behavior_model, tensor, self.cat_behavior_classes)
+                emo, e_conf = self._infer_image_model(self.cat_emotion_model, tensor, self.cat_emotion_classes)
+                snd, s_conf = "Unknown", 0.0
+                
+                return {
+                    "status": "success",
+                    "pet_type_analyzed": "cat",
+                    "behavior_analysis": {"detected_behavior": beh, "confidence": b_conf, "emotion": emo, "emotion_confidence": e_conf},
+                    "audio_analysis": {"detected_sound": snd, "confidence": s_conf},
+                    "summary": f"{beh} (Image Analysis)"
+                }
+
+        except Exception as e:
+            return {"status": "error", "message": f"Image behavior inference failed: {str(e)}"}
+
     def analyze_clip(self, video_bytes: bytes, pet_type: str) -> dict:
         if not self.is_loaded:
             return {"status": "error", "message": "Behavior models are not loaded yet."}
